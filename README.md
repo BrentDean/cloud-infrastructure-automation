@@ -1,5 +1,7 @@
 # Cloud Infrastructure Automation
 
+[![AWS Three-Tier Infrastructure Validation](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/aws-three-tier-validation.yml/badge.svg?branch=main)](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/aws-three-tier-validation.yml)
+
 Infrastructure automation and cloud engineering projects using Terraform,
 Ansible, Linux, and supporting operational tooling.
 
