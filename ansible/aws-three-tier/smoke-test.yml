@@ -1,0 +1,46 @@
+---
+- name: Validate private application to private database connectivity
+  hosts: app
+  gather_facts: false
+  tasks:
+    - name: Application can connect to PostgreSQL
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['db'].lab_private_ip }}"
+        port: 5432
+        connect_timeout: 2
+        timeout: 20
+        state: started
+
+- name: Validate web network boundaries and end-to-end API
+  hosts: web
+  gather_facts: false
+  tasks:
+    - name: Web can reach application HTTP port
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['app'].lab_private_ip }}"
+        port: 8000
+        connect_timeout: 2
+        timeout: 20
+        state: started
+
+    - name: Web cannot reach PostgreSQL directly
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['db'].lab_private_ip }}"
+        port: 5432
+        connect_timeout: 2
+        timeout: 7
+        state: stopped
+
+    - name: Nginx forwards to application and application queries PostgreSQL
+      ansible.builtin.uri:
+        url: http://127.0.0.1/health
+        return_content: true
+        status_code: 200
+      register: api_health
+
+    - name: Require database-backed health response
+      ansible.builtin.assert:
+        that:
+          - api_health.json.status == 'ok'
+          - api_health.json.db == 'connected'
+          - api_health.json.db_result == 1

@@ -1,0 +1,47 @@
+name: AWS Three-Tier Infrastructure Validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-validation:
+    name: Terraform and Ansible (no cloud deployment)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.16.3'
+      - name: Terraform formatting
+        run: terraform fmt -check -recursive terraform/aws-three-tier
+      - name: Terraform initialize without remote backend
+        working-directory: terraform/aws-three-tier
+        run: terraform init -backend=false -input=false
+      - name: Terraform validate
+        working-directory: terraform/aws-three-tier
+        run: terraform validate -no-color
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Ansible Core
+        run: python -m pip install 'ansible-core>=2.18,<2.20'
+      - name: Check playbook syntax without contacting EC2
+        run: |
+          cat > /tmp/aws-three-tier-inventory.ini <<'INVENTORY'
+          [lab_web]
+          web ansible_connection=local
+          [lab_app]
+          app ansible_connection=local
+          [lab_db]
+          db ansible_connection=local
+          INVENTORY
+          ansible-playbook -i /tmp/aws-three-tier-inventory.ini ansible/aws-three-tier/configure.yml --syntax-check
+          ansible-playbook -i /tmp/aws-three-tier-inventory.ini ansible/aws-three-tier/smoke-test.yml --syntax-check
+      - name: Validate runner shell scripts
+        run: bash -n scripts/run-aws-three-tier.sh scripts/destroy-aws-three-tier.sh

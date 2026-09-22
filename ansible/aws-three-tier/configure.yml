@@ -1,0 +1,241 @@
+---
+- name: Configure PostgreSQL on private database instance
+  hosts: db
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+
+    - name: Install PostgreSQL 16
+      ansible.builtin.apt:
+        name: postgresql-16
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: 300
+
+    - name: Allow PostgreSQL to listen on the database private IP
+      ansible.builtin.lineinfile:
+        path: /etc/postgresql/16/main/postgresql.conf
+        regexp: '^\s*#?\s*listen_addresses\s*='
+        line: "listen_addresses = '127.0.0.1,{{ lab_private_ip }}'"
+      notify: Restart PostgreSQL
+
+    - name: Restrict application database access to the application host
+      ansible.builtin.lineinfile:
+        path: /etc/postgresql/16/main/pg_hba.conf
+        line: "host labdb labuser {{ hostvars['app'].lab_private_ip }}/32 scram-sha-256"
+        insertafter: '^# IPv4 local connections:'
+        state: present
+      notify: Restart PostgreSQL
+
+    - name: Check for application database role
+      ansible.builtin.command:
+        argv: [runuser, -u, postgres, --, psql, -tAc, "SELECT 1 FROM pg_roles WHERE rolname = 'labuser'"]
+      register: role_present
+      changed_when: false
+
+    - name: Create application database role
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -v
+          - ON_ERROR_STOP=1
+          - -c
+          - "CREATE ROLE labuser LOGIN PASSWORD '{{ lookup('env', 'LAB_DB_PASSWORD') }}'"
+      when: role_present.stdout | trim != '1'
+      no_log: true
+
+    - name: Check for application database
+      ansible.builtin.command:
+        argv: [runuser, -u, postgres, --, psql, -tAc, "SELECT 1 FROM pg_database WHERE datname = 'labdb'"]
+      register: database_present
+      changed_when: false
+
+    - name: Create application database
+      ansible.builtin.command:
+        argv: [runuser, -u, postgres, --, createdb, -O, labuser, labdb]
+      when: database_present.stdout | trim != '1'
+
+    - name: Ensure PostgreSQL is enabled and started
+      ansible.builtin.systemd_service:
+        name: postgresql
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Restart PostgreSQL
+      ansible.builtin.systemd_service:
+        name: postgresql
+        state: restarted
+
+- name: Deploy private Python application
+  hosts: app
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+
+    - name: Install Python web service dependencies
+      ansible.builtin.apt:
+        name:
+          - gunicorn
+          - python3-flask
+          - python3-psycopg2
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: 300
+
+    - name: Create application directory
+      ansible.builtin.file:
+        path: /opt/aws-three-tier
+        state: directory
+        mode: '0755'
+
+    - name: Create application configuration directory
+      ansible.builtin.file:
+        path: /etc/aws-three-tier
+        state: directory
+        mode: '0700'
+
+    - name: Install database-backed health API
+      ansible.builtin.copy:
+        dest: /opt/aws-three-tier/app.py
+        mode: '0644'
+        content: |
+          import os
+          from flask import Flask, jsonify
+          import psycopg2
+
+          app = Flask(__name__)
+
+          @app.get("/health")
+          def health():
+              try:
+                  with psycopg2.connect(
+                      host=os.environ["PGHOST"],
+                      dbname="labdb",
+                      user="labuser",
+                      password=os.environ["PGPASSWORD"],
+                      connect_timeout=3,
+                  ) as conn:
+                      with conn.cursor() as cur:
+                          cur.execute("SELECT 1")
+                          result = cur.fetchone()[0]
+                  return jsonify(status="ok", role="app", db="connected", db_result=result)
+              except Exception:
+                  app.logger.exception("Database health query failed")
+                  return jsonify(status="error", role="app", db="unavailable"), 503
+      notify: Restart application
+
+    - name: Write private database credentials
+      ansible.builtin.copy:
+        dest: /etc/aws-three-tier/app.env
+        mode: '0600'
+        content: |
+          PGHOST={{ hostvars['db'].lab_private_ip }}
+          PGPASSWORD={{ lookup('env', 'LAB_DB_PASSWORD') }}
+      no_log: true
+      notify: Restart application
+
+    - name: Install application systemd unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/aws-three-tier-app.service
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Ephemeral AWS three-tier API
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=www-data
+          EnvironmentFile=/etc/aws-three-tier/app.env
+          WorkingDirectory=/opt/aws-three-tier
+          ExecStart=/usr/bin/gunicorn --bind {{ lab_private_ip }}:8000 --workers 2 app:app
+          Restart=on-failure
+          RestartSec=2
+
+          [Install]
+          WantedBy=multi-user.target
+      register: app_unit
+      notify: Restart application
+
+    - name: Reload systemd if the application unit changed
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      when: app_unit.changed
+
+    - name: Enable application service
+      ansible.builtin.systemd_service:
+        name: aws-three-tier-app
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Restart application
+      ansible.builtin.systemd_service:
+        name: aws-three-tier-app
+        state: restarted
+
+- name: Configure public reverse proxy and SSH bastion
+  hosts: web
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+
+    - name: Install Nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: 300
+
+    - name: Remove default site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Reload Nginx
+
+    - name: Configure application reverse proxy
+      ansible.builtin.copy:
+        dest: /etc/nginx/sites-enabled/aws-three-tier.conf
+        mode: '0644'
+        content: |
+          server {
+              listen 80 default_server;
+              server_name _;
+              location = /health {
+                  proxy_pass http://{{ hostvars['app'].lab_private_ip }}:8000/health;
+                  proxy_connect_timeout 4s;
+                  proxy_read_timeout 5s;
+              }
+              location / { return 404; }
+          }
+      notify: Reload Nginx
+
+    - name: Ensure Nginx is enabled and started
+      ansible.builtin.systemd_service:
+        name: nginx
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Reload Nginx
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: reloaded
