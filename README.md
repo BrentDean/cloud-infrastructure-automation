@@ -1,4 +1,4 @@
-# VPS Infrastructure
+# Cloud Infrastructure Automation
 
 Infrastructure automation and cloud engineering projects using Terraform,
 Ansible, Linux, and supporting operational tooling.
