@@ -1,0 +1,17 @@
+# Machine-specific inventory
+ansible/inventory.ini
+
+# Secrets
+.env
+*.secret
+*.vault-password
+
+# Terraform
+.terraform/
+*.tfvars
+*.tfstate
+*.tfstate.*
+*.tfplan
+
+# Ansible
+*.retry
