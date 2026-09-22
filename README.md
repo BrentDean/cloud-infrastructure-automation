@@ -76,3 +76,20 @@ Terraform state, and private run evidence are not intended for Git.
 AWS infrastructure created by the lab is billable. The runner attempts
 teardown after testing, and a separate recovery script is provided for
 interrupted runs. AWS Budget alerts are notifications, not spending caps.
+
+### Deployment evidence
+
+Screenshots from the verified September 22, 2026 deployment.
+The AWS infrastructure was subsequently destroyed.
+
+**Three EC2 instances running with passing status checks**
+
+![AWS EC2 instances](screenshots/aws-three-tier/01-ec2-instances.png)
+
+**Successful GitHub Actions validation**
+
+![GitHub Actions success](screenshots/aws-three-tier/02-github-actions-success.png)
+
+**Ansible configuration, idempotency, network tests, and Terraform lifecycle**
+
+![Verified deployment results](screenshots/aws-three-tier/03-verified-run-results.png)
