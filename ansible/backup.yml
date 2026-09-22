@@ -1,11 +1,14 @@
 ---
-- name: Back up staging VPS baseline to the control workstation
+- name: Back up staging VPS and verify encrypted recovery
   hosts: staging
   become: true
   gather_facts: true
 
   vars:
-    local_backup_dir: "/mnt/hyperV/backups/staging-vps/archives"
+    local_backup_root: /mnt/hyperV/backups/staging-vps
+    local_backup_dir: "{{ local_backup_root }}/archives"
+    local_restic_repo: "{{ local_backup_root }}/restic"
+    local_restic_password_file: "{{ lookup('env', 'HOME') }}/.config/vps-infrastructure/restic-password"
     local_backup_file: >-
       {{ local_backup_dir }}/{{ inventory_hostname }}-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.tar.gz
     backup_candidates:
@@ -19,20 +22,55 @@
       - etc/systemd/system/seed-app.service
       - home/hetz-1/src/sites
       - home/hetz-1/.torkit
+    required_restore_paths:
+      - etc/apache2/apache2.conf
+      - etc/systemd/system/recipe-app.service
+      - etc/systemd/system/seed-app.service
+      - home/hetz-1/src/sites/launchshell/recipe_app
+      - home/hetz-1/src/sites/launchshell/seed_app
+      - home/hetz-1/.torkit/state
 
   tasks:
+    - name: Check local Restic password file without hashing its contents
+      become: false
+      delegate_to: localhost
+      ansible.builtin.stat:
+        path: "{{ local_restic_password_file }}"
+        get_checksum: false
+        get_mime: false
+      register: restic_password_stat
+      no_log: true
+
+    - name: Require protected local Restic credentials
+      ansible.builtin.assert:
+        that:
+          - restic_password_stat.stat.isreg | default(false)
+          - restic_password_stat.stat.mode | default('') == '0600'
+        fail_msg: "Create the workstation Restic password file with mode 0600; do not put the password in Git."
+
+    - name: Confirm local encrypted repository is accessible before archiving
+      become: false
+      delegate_to: localhost
+      ansible.builtin.command:
+        argv: [restic, --repo, "{{ local_restic_repo }}", snapshots, --json]
+      environment:
+        RESTIC_PASSWORD_FILE: "{{ local_restic_password_file }}"
+      changed_when: false
+      no_log: true
+
     - name: Locate backup targets without displaying their contents
       ansible.builtin.stat:
         path: "/{{ item }}"
       loop: "{{ backup_candidates }}"
       register: candidate_stats
 
-    - name: Require existing website code and Apache configuration
+    - name: Require existing website code, TorKit state and Apache configuration
       ansible.builtin.assert:
         that:
           - "'etc/apache2' in present_paths"
           - "'home/hetz-1/src/sites' in present_paths"
-        fail_msg: "Required backup target missing; stop and inspect the VPS."
+          - "'home/hetz-1/.torkit' in present_paths"
+        fail_msg: "Required VPS backup target missing; stop and inspect the server."
       vars:
         present_paths: "{{ candidate_stats.results | selectattr('stat.exists') | map(attribute='item') | list }}"
 
@@ -50,7 +88,7 @@
         suffix: .tar.gz
       register: remote_archive
 
-    - name: Archive, verify, and transfer baseline
+    - name: Archive, verify and transfer baseline
       block:
         - name: Package only targets that exist
           ansible.builtin.command:
@@ -58,9 +96,9 @@
           changed_when: true
           no_log: true
 
-        - name: Check archive can be read
+        - name: Check archive can be read on VPS
           ansible.builtin.command:
-            argv: ['tar', '-tzf', '{{ remote_archive.path }}']
+            argv: [tar, -tzf, "{{ remote_archive.path }}"]
           changed_when: false
           no_log: true
 
@@ -86,6 +124,165 @@
           when: remote_archive.path is defined
           no_log: true
 
-    - name: Report backup location (not archive contents)
+    - name: Add this archive to the encrypted local Restic repository
+      become: false
+      delegate_to: localhost
+      ansible.builtin.command:
+        argv:
+          - restic
+          - --repo
+          - "{{ local_restic_repo }}"
+          - backup
+          - "{{ local_backup_file }}"
+          - --tag
+          - staging-vps-archive
+          - --json
+      environment:
+        RESTIC_PASSWORD_FILE: "{{ local_restic_password_file }}"
+      register: restic_backup
+      changed_when: true
+
+    - name: Select the exact snapshot just created
+      ansible.builtin.set_fact:
+        restic_snapshot_id: >-
+          {{ (restic_backup.stdout_lines | map('from_json') | selectattr('message_type', 'equalto', 'summary') | map(attribute='snapshot_id') | first) | default('') }}
+
+    - name: Require a snapshot ID from Restic
+      ansible.builtin.assert:
+        that:
+          - restic_snapshot_id is match('^[0-9a-f]{8,64}$')
+        fail_msg: "Restic did not return a snapshot ID; inspect its backup output before continuing."
+
+    - name: Check encrypted repository structure
+      become: false
+      delegate_to: localhost
+      ansible.builtin.command:
+        argv: [restic, --repo, "{{ local_restic_repo }}", check]
+      environment:
+        RESTIC_PASSWORD_FILE: "{{ local_restic_password_file }}"
+      changed_when: false
+
+    - name: Create private local restore-test directory
+      become: false
+      delegate_to: localhost
+      ansible.builtin.tempfile:
+        state: directory
+        path: "{{ local_backup_root }}"
+        prefix: restore-test.
+      register: restore_test
+
+    - name: Restore and inspect files from the exact encrypted snapshot
+      block:
+        - name: Restore newly created Restic snapshot into isolation
+          become: false
+          delegate_to: localhost
+          ansible.builtin.command:
+            argv:
+              - restic
+              - --repo
+              - "{{ local_restic_repo }}"
+              - restore
+              - "{{ restic_snapshot_id }}"
+              - --target
+              - "{{ restore_test.path }}/snapshot"
+          environment:
+            RESTIC_PASSWORD_FILE: "{{ local_restic_password_file }}"
+          changed_when: true
+          no_log: true
+
+        - name: Require the recovered archive to exist
+          become: false
+          delegate_to: localhost
+          ansible.builtin.stat:
+            path: "{{ restore_test.path }}/snapshot{{ local_backup_file }}"
+            get_checksum: false
+          register: recovered_archive
+          no_log: true
+
+        - name: Fail if the encrypted snapshot did not restore the new archive
+          ansible.builtin.assert:
+            that:
+              - recovered_archive.stat.isreg | default(false)
+            fail_msg: "The restored snapshot does not contain the archive from this run."
+
+        - name: Calculate original archive SHA-256
+          become: false
+          delegate_to: localhost
+          ansible.builtin.stat:
+            path: "{{ local_backup_file }}"
+            checksum_algorithm: sha256
+          register: original_archive_hash
+          no_log: true
+
+        - name: Calculate recovered archive SHA-256
+          become: false
+          delegate_to: localhost
+          ansible.builtin.stat:
+            path: "{{ restore_test.path }}/snapshot{{ local_backup_file }}"
+            checksum_algorithm: sha256
+          register: recovered_archive_hash
+          no_log: true
+
+        - name: Require byte-for-byte recovery
+          ansible.builtin.assert:
+            that:
+              - original_archive_hash.stat.checksum == recovered_archive_hash.stat.checksum
+            fail_msg: "SHA-256 mismatch: Restic recovery differs from the original archive."
+            success_msg: "SHA-256 verified: recovered archive matches the original."
+
+        - name: Create private archive extraction destination
+          become: false
+          delegate_to: localhost
+          ansible.builtin.file:
+            path: "{{ restore_test.path }}/extracted"
+            state: directory
+            mode: '0700'
+
+        - name: Extract archive recovered from Restic without applying source ownership
+          become: false
+          delegate_to: localhost
+          ansible.builtin.command:
+            argv:
+              - tar
+              - --no-same-owner
+              - --no-same-permissions
+              - -xzf
+              - "{{ restore_test.path }}/snapshot{{ local_backup_file }}"
+              - -C
+              - "{{ restore_test.path }}/extracted"
+          changed_when: true
+          no_log: true
+
+        - name: Inspect required files and directories in restored archive
+          become: false
+          delegate_to: localhost
+          ansible.builtin.stat:
+            path: "{{ restore_test.path }}/extracted/{{ item }}"
+            get_checksum: false
+            follow: true
+          loop: "{{ required_restore_paths }}"
+          register: restored_paths
+          no_log: true
+
+        - name: Require all essential recovery paths
+          ansible.builtin.assert:
+            that:
+              - "(restored_paths.results | selectattr('stat.exists') | list | length) == (required_restore_paths | length)"
+            fail_msg: "Restore test failed: at least one essential application or configuration path is missing."
+
+      always:
+        - name: Remove isolated restore-test data from workstation
+          become: false
+          delegate_to: localhost
+          ansible.builtin.file:
+            path: "{{ restore_test.path }}"
+            state: absent
+          when: restore_test.path is defined
+          no_log: true
+
+    - name: Report verified backup and tested recovery
       ansible.builtin.debug:
-        msg: "Saved private baseline backup to {{ local_backup_file }}"
+        msg: >-
+          Backup {{ local_backup_file }} stored in encrypted repository
+          {{ local_restic_repo }} as snapshot {{ restic_snapshot_id }}.
+          Isolated extraction and essential-path restore test PASSED.
