@@ -1,0 +1,91 @@
+---
+- name: Back up staging VPS baseline to the control workstation
+  hosts: staging
+  become: true
+  gather_facts: true
+
+  vars:
+    local_backup_dir: "{{ lookup('env', 'HOME') }}/staging-vps-backups"
+    local_backup_file: >-
+      {{ local_backup_dir }}/{{ inventory_hostname }}-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.tar.gz
+    backup_candidates:
+      - etc/apache2
+      - etc/letsencrypt
+      - etc/ufw
+      - etc/fail2ban
+      - etc/ssh/sshd_config
+      - etc/ssh/sshd_config.d
+      - etc/systemd/system/recipe-app.service
+      - etc/systemd/system/seed-app.service
+      - home/hetz-1/src/sites
+      - home/hetz-1/.torkit
+
+  tasks:
+    - name: Locate backup targets without displaying their contents
+      ansible.builtin.stat:
+        path: "/{{ item }}"
+      loop: "{{ backup_candidates }}"
+      register: candidate_stats
+
+    - name: Require existing website code and Apache configuration
+      ansible.builtin.assert:
+        that:
+          - "'etc/apache2' in present_paths"
+          - "'home/hetz-1/src/sites' in present_paths"
+        fail_msg: "Required backup target missing; stop and inspect the VPS."
+      vars:
+        present_paths: "{{ candidate_stats.results | selectattr('stat.exists') | map(attribute='item') | list }}"
+
+    - name: Create private backup destination on workstation
+      become: false
+      delegate_to: localhost
+      ansible.builtin.file:
+        path: "{{ local_backup_dir }}"
+        state: directory
+        mode: '0700'
+
+    - name: Create private temporary archive file on VPS
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .tar.gz
+      register: remote_archive
+
+    - name: Archive, verify, and transfer baseline
+      block:
+        - name: Package only targets that exist
+          ansible.builtin.command:
+            argv: "{{ ['tar', '-C', '/', '-czf', remote_archive.path] + (candidate_stats.results | selectattr('stat.exists') | map(attribute='item') | list) }}"
+          changed_when: true
+          no_log: true
+
+        - name: Check archive can be read
+          ansible.builtin.command:
+            argv: ['tar', '-tzf', '{{ remote_archive.path }}']
+          changed_when: false
+          no_log: true
+
+        - name: Copy archive to workstation
+          ansible.builtin.fetch:
+            src: "{{ remote_archive.path }}"
+            dest: "{{ local_backup_file }}"
+            flat: true
+          no_log: true
+
+        - name: Restrict workstation backup file permissions
+          become: false
+          delegate_to: localhost
+          ansible.builtin.file:
+            path: "{{ local_backup_file }}"
+            mode: '0600'
+
+      always:
+        - name: Remove temporary archive from VPS
+          ansible.builtin.file:
+            path: "{{ remote_archive.path }}"
+            state: absent
+          when: remote_archive.path is defined
+          no_log: true
+
+    - name: Report backup location (not archive contents)
+      ansible.builtin.debug:
+        msg: "Saved private baseline backup to {{ local_backup_file }}"
