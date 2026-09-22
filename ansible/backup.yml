@@ -5,7 +5,7 @@
   gather_facts: true
 
   vars:
-    local_backup_dir: "{{ lookup('env', 'HOME') }}/staging-vps-backups"
+    local_backup_dir: "/mnt/hyperV/backups/staging-vps/archives"
     local_backup_file: >-
       {{ local_backup_dir }}/{{ inventory_hostname }}-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.tar.gz
     backup_candidates:
