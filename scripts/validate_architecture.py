@@ -55,7 +55,7 @@ def main() -> None:
     require('for_each                    = local.instances' in compute,
             "Original three-role EC2 resource must be retained")
     for role in ("web", "app", "db"):
-        require(re.search(r'^    ' + role + r' = \{ subnet_id', compute, re.MULTILINE)
+        require(re.search(r'^\s*' + role + r'\s*=\s*\{\s*subnet_id', compute, re.MULTILINE)
                 is not None, "AWS EC2 role missing: " + role)
 
     app_ingress = resource("app_http", networking)
