@@ -1,8 +1,0 @@
-# Copy to terraform.tfvars (gitignored); set to your CURRENT public IPv4 /32.
-operator_cidr = "203.0.113.10/32"
-
-# Requires matching private key when running Ansible/deploy script.
-ssh_public_key_path = "~/.ssh/id_ed25519.pub"
-name                = "k3s-lab-portfolio"
-location            = "nbg1"
-server_type         = "cx23"
