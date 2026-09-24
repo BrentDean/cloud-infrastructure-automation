@@ -19,6 +19,19 @@ export AWS_REGION="${AWS_REGION:-us-east-1}"
 export AWS_DEFAULT_REGION="$AWS_REGION"
 export AWS_PAGER='' ANSIBLE_NOCOLOR=1
 LAB_HOLD_MINUTES="${LAB_HOLD_MINUTES:-0}"
+LAB_APP_RUNTIME="${LAB_APP_RUNTIME:-systemd}"
+export LAB_APP_RUNTIME
+if [[ "$LAB_APP_RUNTIME" != systemd && "$LAB_APP_RUNTIME" != k3s ]]; then
+  echo 'LAB_APP_RUNTIME must be systemd or k3s.' >&2
+  exit 2
+fi
+if [[ "$LAB_APP_RUNTIME" == k3s ]]; then
+  for cmd in docker; do
+    command -v "$cmd" >/dev/null || { echo "Missing k3s prerequisite: $cmd" >&2; exit 1; }
+  done
+  docker info >/dev/null || { echo 'Docker daemon unavailable on workstation.' >&2; exit 1; }
+fi
+export TF_VAR_app_runtime="$LAB_APP_RUNTIME"
 
 for cmd in terraform aws python3 ssh ssh-keygen openssl curl flock tee; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -70,16 +83,18 @@ WORK="$(mktemp -d "$RUN_ROOT/run.XXXXXXXX")"
 mkdir -p "$WORK/terraform" "$WORK/evidence"
 cp "$SOURCE"/*.tf "$SOURCE/cloud-init.yaml" "$SOURCE/.terraform.lock.hcl" "$WORK/terraform/"
 chmod 700 "$WORK"
+echo "Private run directory: $WORK"
 RUN_ID="lab-$(basename "$WORK" | cut -d . -f 2 | tr '[:upper:]' '[:lower:]')"
 EXPIRES_AT="$(date -u -d '+4 hours' '+%Y-%m-%dT%H:%M:%SZ')"
 ssh-keygen -q -t ed25519 -N '' -C "aws-three-tier-$RUN_ID" -f "$WORK/id_ed25519"
 
-python3 - "$WORK/terraform/lab.auto.tfvars.json" "$RUN_ID" "$EXPIRES_AT" "$ALLOWED_CIDR" "$AWS_REGION" "$WORK/id_ed25519.pub" <<'PY'
+python3 - "$WORK/terraform/lab.auto.tfvars.json" "$RUN_ID" "$EXPIRES_AT" "$ALLOWED_CIDR" "$AWS_REGION" "$WORK/id_ed25519.pub" "$LAB_APP_RUNTIME" <<'PY'
 import json, pathlib, sys
-p, run_id, expires, cidr, region, pub = sys.argv[1:]
+p, run_id, expires, cidr, region, pub, app_runtime = sys.argv[1:]
 pathlib.Path(p).write_text(json.dumps({
     'run_id': run_id, 'expires_at': expires, 'allowed_cidr': cidr,
     'aws_region': region, 'ssh_public_key': pathlib.Path(pub).read_text().strip(),
+    'app_runtime': app_runtime,
 }, indent=2) + '\n')
 PY
 
@@ -112,6 +127,8 @@ terraform -chdir="$WORK/terraform" fmt -check
 terraform -chdir="$WORK/terraform" validate -no-color
 terraform -chdir="$WORK/terraform" plan -input=false -no-color -out="$WORK/terraform/lab.tfplan"
 ARMED=1
+echo 'Provisioning AWS infrastructure: NAT gateway creation commonly takes approximately 2–5 minutes (sometimes longer).'
+echo 'Repeating "Still creating..." messages are normal; keep this terminal open through testing and teardown.'
 terraform -chdir="$WORK/terraform" apply -input=false -auto-approve -no-color "$WORK/terraform/lab.tfplan"
 
 WEB_IP="$(terraform -chdir="$WORK/terraform" output -raw web_public_ip)"
@@ -190,18 +207,32 @@ done
 # Short-lived, local-only database credential; not sent to Terraform or Git.
 export LAB_DB_PASSWORD="$(openssl rand -hex 24)"
 ANSIBLE_ARGS=(-i "$WORK/inventory.ini" --ssh-common-args "-F $SSH_CONFIG")
-"$ANSIBLE_PLAYBOOK" "${ANSIBLE_ARGS[@]}" "$ANSIBLE/configure.yml" | tee "$WORK/evidence/configure-first.log"
-"$ANSIBLE_PLAYBOOK" "${ANSIBLE_ARGS[@]}" "$ANSIBLE/configure.yml" | tee "$WORK/evidence/configure-second.log"
-python3 - "$WORK/evidence/configure-second.log" <<'PY'
+CONFIGURE_ARGS=()
+if [[ "$LAB_APP_RUNTIME" == k3s ]]; then
+  # Keep PostgreSQL and Nginx on their original dedicated EC2 hosts.
+  # Replace only the private app tier's systemd Gunicorn with single-node k3s.
+  CONFIGURE_ARGS=(--skip-tags systemd_app -e lab_app_port=30080)
+fi
+"$ANSIBLE_PLAYBOOK" "${ANSIBLE_ARGS[@]}" "${CONFIGURE_ARGS[@]}" "$ANSIBLE/configure.yml" | tee "$WORK/evidence/configure-first.log"
+if [[ "$LAB_APP_RUNTIME" == k3s ]]; then
+  "$ROOT/scripts/k3s/aws-deploy.sh" "$SSH_CONFIG" "$APP_IP" "$DB_IP" "$WORK/evidence" \
+    | tee "$WORK/evidence/k3s-deploy.log"
+fi
+"$ANSIBLE_PLAYBOOK" "${ANSIBLE_ARGS[@]}" "${CONFIGURE_ARGS[@]}" "$ANSIBLE/configure.yml" | tee "$WORK/evidence/configure-second.log"
+python3 - "$WORK/evidence/configure-second.log" "$LAB_APP_RUNTIME" <<'PY'
 import pathlib, re, sys
 s = pathlib.Path(sys.argv[1]).read_text()
-for host in ('web', 'app', 'db'):
+for host in ('web', 'db') if sys.argv[2] == 'k3s' else ('web', 'app', 'db'):
     p = rf'(?m)^\s*{host}\s*:\s*ok=\d+\s+changed=0\s+unreachable=0\s+failed=0\b'
     if not re.search(p, s):
         raise SystemExit(f'Idempotency verification failed for {host}')
-print('PASS: second configuration run changed=0 on all three machines')
+print('PASS: second configuration run changed=0 on configured EC2 tiers')
 PY
-"$ANSIBLE_PLAYBOOK" "${ANSIBLE_ARGS[@]}" "$ANSIBLE/smoke-test.yml" | tee "$WORK/evidence/smoke-test.log"
+"$ANSIBLE_PLAYBOOK" "${ANSIBLE_ARGS[@]}" "${CONFIGURE_ARGS[@]}" "$ANSIBLE/smoke-test.yml" | tee "$WORK/evidence/smoke-test.log"
+if [[ "$LAB_APP_RUNTIME" == k3s ]]; then
+  "$ROOT/scripts/k3s/aws-verify.sh" "$SSH_CONFIG" "$RUN_ID" \
+    | tee "$WORK/evidence/k3s-verification.log"
+fi
 
 curl --fail --silent --show-error --max-time 20 --retry 6 --retry-delay 3 \
   "http://$WEB_IP/health" > "$WORK/evidence/external-health.json"
@@ -213,8 +244,8 @@ if r.get('status') != 'ok' or r.get('db') != 'connected' or r.get('db_result') !
 print('PASS: workstation -> web -> app -> PostgreSQL returned SELECT 1')
 PY
 
-printf 'RUN_ID=%s\nREGION=%s\nPUBLIC_WEB_IP=%s\nEXPIRES_AT=%s\n' \
-  "$RUN_ID" "$AWS_REGION" "$WEB_IP" "$EXPIRES_AT" > "$WORK/evidence/run-summary.txt"
+printf 'RUN_ID=%s\nREGION=%s\nAPP_RUNTIME=%s\nPUBLIC_WEB_IP=%s\nEXPIRES_AT=%s\n' \
+  "$RUN_ID" "$AWS_REGION" "$LAB_APP_RUNTIME" "$WEB_IP" "$EXPIRES_AT" > "$WORK/evidence/run-summary.txt"
 echo "PASS: three-tier provisioning, configuration, idempotency, connectivity, network restrictions."
 echo "Evidence: $WORK/evidence"
 if (( LAB_HOLD_MINUTES > 0 )); then

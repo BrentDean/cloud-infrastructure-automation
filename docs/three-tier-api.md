@@ -1,10 +1,11 @@
 # Shared Flask/PostgreSQL application
 
 The application source is maintained once at `apps/three-tier-api/app.py`.
-The existing AWS Ansible playbook copies this file to the private EC2 app
-host and continues using the Ubuntu-packaged Gunicorn/Flask/psycopg2
-runtime and the original systemd service. The Dockerfile packages the
-same source for the planned k3s deployment.
+In the default AWS deployment, Ansible copies this file to the private EC2
+app host and runs it through the Ubuntu-packaged Gunicorn/Flask/psycopg2
+systemd service. In the optional AWS k3s mode, the Dockerfile packages
+this **same source** as two non-root Flask Pods on the *same private app EC2*.
+Both modes connect to PostgreSQL on the separate private DB EC2.
 
 ## HTTP contracts
 
@@ -50,9 +51,9 @@ application/database failure behavior from Docker DNS alias churn.
 Use `API_TEST_PORT` to choose another free local port. Cleanup destroys
 **only that uniquely named test Compose project and its test volume**.
 
-This milestone does not provision k3s, change the existing Hetzner
-staging deployment, or independently re-run the billable AWS lab. Before
-merging, confirm the GitHub Actions unit/integration jobs pass; when
-re-running the AWS lab separately, require the existing idempotency,
-network-segmentation, and end-to-end checks to pass before claiming
-AWS deployment regression verification.
+Python and Docker integration tests do not provision AWS or k3s. The shared
+API was separately verified in containers; the original AWS systemd lab was
+verified before k3s mode existed. The optional Kubernetes infrastructure was **separately live-verified in AWS
+on September 24, 2026**. See the [k3s verification record](live-verification-2026-09-24.md)
+and [integrated runbook](kubernetes-k3s.md). The unrelated existing
+Hetzner staging server is not changed by either AWS lab mode.

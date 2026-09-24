@@ -38,3 +38,20 @@ variable "instance_type" {
   default     = "t3.small"
   description = "EC2 instance type for all three roles; override with TF_VAR_instance_type."
 }
+
+variable "app_runtime" {
+  type        = string
+  description = "Choose the existing systemd Gunicorn API or optional single-node k3s on the private app EC2 instance."
+  default     = "systemd"
+
+  validation {
+    condition     = contains(["systemd", "k3s"], var.app_runtime)
+    error_message = "app_runtime must be either systemd or k3s."
+  }
+}
+
+variable "k3s_app_instance_type" {
+  type        = string
+  description = "Private app EC2 size only when app_runtime is k3s; default 2 vCPU and 4 GiB RAM."
+  default     = "t3.medium"
+}
