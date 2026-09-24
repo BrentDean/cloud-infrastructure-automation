@@ -80,31 +80,49 @@ This is a condensed excerpt based on the captured September 24 operator output, 
 
 ## Screenshots from the live run
 
-The screenshots below were captured during the **September 24 k3s deployment**. The [original systemd-mode screenshots](../screenshots/aws-three-tier/01-ec2-instances.png) are a separate historical baseline.
+These seven screenshots show the **September 24 AWS k3s deployment in execution order**, from Terraform provisioning through complete teardown. They are separate from the [September 22 systemd-mode evidence](../screenshots/aws-three-tier/01-ec2-instances.png).
 
-### 1. Kubernetes workloads and functional verification
+### 1. Provision AWS with Terraform
 
-![Live AWS k3s: Ready node, 2/2 Flask Deployment, NodePort, Bound PVC and passing database and persistence checks](../screenshots/aws-three-tier/k3s/01-k3s-workloads-and-verification.png)
+![Terraform apply creates 28 resources and prints the public web and private application/database addresses](../screenshots/aws-three-tier/k3s/01-terraform-apply.png)
 
-The app EC2 reports a Ready single-node cluster, two running Flask replicas, an internal NodePort Service and the bound test volume. The verification output below the workload table shows endpoint checks and Pod-level persistence.
+The same Terraform root provisions the web, application and database tiers. Only the web EC2 receives a public IP.
 
-### 2. Network boundaries and database-backed API
+### 2. Configure private k3s with Ansible
 
-![Ansible smoke tests: private app reaches PostgreSQL, web reaches application, direct web to database blocked and DB-backed Nginx response passes](../screenshots/aws-three-tier/k3s/02-network-boundaries-and-database-smoke.png)
+![Ansible installs k3s on the private application EC2 through the existing bastion and verifies node readiness](../screenshots/aws-three-tier/k3s/02-ansible-k3s-install.png)
 
-The positive and negative checks establish the intended paths: web → app and app → DB permitted; web → DB denied.
+The installation play completes with `failed=0`. k3s is installed on the existing private app EC2, not a fourth host or EKS control plane.
 
-### 3. Configuration idempotency
+### 3. Create the Kubernetes workload
 
-![Second Ansible configuration pass reports changed=0 for the web and database tiers](../screenshots/aws-three-tier/k3s/03-ansible-idempotency.png)
+![Kubernetes creates runtime database configuration, Secret, test PVC, Service and two-replica Flask Deployment, then completes rollout](../screenshots/aws-three-tier/k3s/03-k3s-workload-deployment.png)
 
-The repeated configuration pass produced no changes on web or DB. The systemd app play was intentionally omitted for the k3s deployment.
+The namespace, runtime-only DB configuration, workload and test storage are created. The Deployment progresses from zero available replicas to two.
 
-### 4. AWS teardown
+### 4. Verify the private application tier
 
-![Terraform shows successful destruction of all 28 resources, including the NAT gateway](../screenshots/aws-three-tier/k3s/04-terraform-destroy-28-resources.png)
+![Live private k3s node Ready, Flask Deployment 2/2, NodePort Service, Bound evidence PVC, passing database health and Pod persistence checks](../screenshots/aws-three-tier/k3s/04-k3s-workloads-and-verification.png)
 
-The teardown includes the NAT gateway and ends with `Destroy complete! Resources: 28 destroyed.` A completed Terraform destroy is the direct evidence for this specific run; account-wide VPC dashboard totals are not used as proof of resource cleanup.
+The node is Ready, both API Pods are Running with zero observed restarts, and `/healthz`, `/readyz` and `/health` pass. The test-only PVC retains its marker after **only the evidence Pod** is deleted and recreated.
+
+### 5. Verify Ansible idempotency
+
+![Second Ansible configuration pass reports changed=0 for web and dedicated DB tiers](../screenshots/aws-three-tier/k3s/05-ansible-idempotency.png)
+
+Both configured tiers report `changed=0` and `failed=0`. The systemd application play is intentionally skipped in k3s mode; this screenshot does not prove full-cluster second-run idempotency.
+
+### 6. Validate network restrictions and the database-backed API
+
+![Ansible confirms allowed app-to-DB and web-to-app paths, denied direct web-to-DB access and a successful database-backed Nginx health response](../screenshots/aws-three-tier/k3s/06-network-boundaries-and-database-smoke.png)
+
+Positive connectivity checks and the negative web→PostgreSQL test pass. The Nginx-to-Flask-to-dedicated-PostgreSQL request returns the expected health response.
+
+### 7. Destroy all AWS lab resources
+
+![Terraform destroys the NAT gateway and remaining AWS networking resources and reports 28 resources destroyed](../screenshots/aws-three-tier/k3s/07-terraform-destroy-28-resources.png)
+
+The final recorded output is `Destroy complete! Resources: 28 destroyed.` This confirms successful Terraform-managed teardown for this run; it is not a claim that the entire AWS account is empty.
 
 ## What the evidence does—and does not—establish
 
