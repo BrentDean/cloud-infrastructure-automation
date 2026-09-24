@@ -1,0 +1,39 @@
+name: Isolated k3s Infrastructure Validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  k3s-static-validation:
+    name: Terraform, Ansible, Kubernetes (no cloud deployment)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.16.3'
+      - name: Terraform formatting
+        run: terraform fmt -check -recursive terraform/hetzner-k3s
+      - name: Terraform provider initialization, no remote state
+        working-directory: terraform/hetzner-k3s
+        run: terraform init -backend=false -input=false
+      - name: Terraform validate without a cloud token
+        working-directory: terraform/hetzner-k3s
+        run: terraform validate -no-color
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install offline manifest and Ansible validators
+        run: python -m pip install 'PyYAML>=6,<7' 'ansible-core>=2.18,<2.20'
+      - name: Validate Kubernetes manifests without a cluster
+        run: python scripts/k3s/validate_manifests.py
+      - name: Check disposable-node Ansible syntax
+        run: ansible-playbook -i 'k3s,' ansible/k3s/install.yml --syntax-check
+      - name: Validate operator scripts
+        run: bash -n scripts/k3s/*.sh

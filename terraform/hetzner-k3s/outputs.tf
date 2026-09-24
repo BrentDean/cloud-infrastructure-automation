@@ -3,6 +3,11 @@ output "server_ipv4" {
   value       = hcloud_server.k3s.ipv4_address
 }
 
+output "server_name" {
+  description = "Safety gate for scripts: must have k3s-lab- prefix."
+  value       = hcloud_server.k3s.name
+}
+
 output "ssh_command" {
   description = "Connect using the private counterpart of ssh_public_key_path."
   value       = "ssh labops@${hcloud_server.k3s.ipv4_address}"

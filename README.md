@@ -76,7 +76,7 @@ new `/healthz` (process) and `/readyz` (database) endpoints support distinct
 Kubernetes liveness and readiness checks.
 
 See [application testing and architecture](docs/three-tier-api.md).
-The k3s cluster itself has **not** been deployed or verified yet.
+The isolated k3s deployment code is available below; live VPS provisioning and\nend-to-end cluster validation must be performed separately.
 
 ## Hetzner VPS automation
 
