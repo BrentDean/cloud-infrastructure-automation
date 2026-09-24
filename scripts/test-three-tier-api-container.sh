@@ -5,6 +5,7 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE="$ROOT/apps/three-tier-api/compose.integration.yaml"
 MIGRATION="$ROOT/apps/three-tier-api/migrations/0001_incidents.sql"
+EVENT_MIGRATION="$ROOT/apps/three-tier-api/migrations/0002_security_events.sql"
 export COMPOSE_PROJECT_NAME="three-tier-api-test-$$"
 export LAB_DB_PASSWORD="${LAB_DB_PASSWORD:-$(python3 -c 'import secrets; print(secrets.token_hex(24))')}"
 export API_TEST_PORT="${API_TEST_PORT:-18080}"
@@ -36,6 +37,8 @@ done
 for pass in first second; do
   docker compose -f "$COMPOSE" exec -T postgres \
     psql -U labuser -d labdb -v ON_ERROR_STOP=1 < "$MIGRATION" >/dev/null
+  docker compose -f "$COMPOSE" exec -T postgres \
+    psql -U labuser -d labdb -v ON_ERROR_STOP=1 < "$EVENT_MIGRATION" >/dev/null
 done
 
 docker compose -f "$COMPOSE" up -d --build api
@@ -82,6 +85,39 @@ item=json.load(sys.stdin)["incident"]
 assert item["status"]=="investigating" and item["notes"]=="Reviewed synthetic events"
 '
 
+
+echo '=== Attach synthetic Cowrie event; retry and conflict must not duplicate ==='
+event_body='{"source":"cowrie","event_type":"cowrie.login.failed","source_event_id":"synthetic-run-1-attempt-001","source_ip":"198.51.100.23","username":"root","observed_at":"2026-09-24T12:00:00Z"}'
+events_url="$BASE_URL/api/v1/incidents/$incident_id/events"
+event_response="$(curl -sS --max-time 8 -w '\n%{http_code}' -X POST "$events_url" \
+  -H 'Content-Type: application/json' --data "$event_body")"
+[[ "${event_response##*$'\n'}" == 201 ]] || { echo 'Expected first event ingestion 201' >&2; exit 1; }
+event_payload="${event_response%$'\n'*}"
+event_uuid="$(printf '%s' "$event_payload" | python3 -c '
+import json,sys,uuid
+item=json.load(sys.stdin)["event"]
+assert item["source_ip"]=="198.51.100.23"
+assert item["source"]=="cowrie" and item["event_type"]=="cowrie.login.failed"
+assert item["username"]=="root" and item["observed_at"]=="2026-09-24T12:00:00+00:00"
+print(uuid.UUID(item["id"]))
+')"
+replay_response="$(curl -sS --max-time 8 -w '\n%{http_code}' -X POST "$events_url" \
+  -H 'Content-Type: application/json' --data "$event_body")"
+[[ "${replay_response##*$'\n'}" == 200 ]] || { echo 'Expected idempotent event replay 200' >&2; exit 1; }
+printf '%s' "${replay_response%$'\n'*}" | python3 -c '
+import json,sys
+assert json.load(sys.stdin)["event"]["id"]==sys.argv[1]
+' "$event_uuid"
+conflict_status="$(curl -sS --max-time 8 -o /dev/null -w '%{http_code}' \
+  -X POST "$events_url" -H 'Content-Type: application/json' \
+  --data '{"source":"cowrie","event_type":"cowrie.login.failed","source_event_id":"synthetic-run-1-attempt-001","source_ip":"198.51.100.23","username":"admin","observed_at":"2026-09-24T12:00:00Z"}')"
+[[ "$conflict_status" == 409 ]] || { echo "Expected conflicting event replay 409, got $conflict_status" >&2; exit 1; }
+curl -fsS --max-time 5 "$events_url" | python3 -c '
+import json,sys
+items=json.load(sys.stdin)["events"]
+assert len(items)==1 and items[0]["source_event_id"]=="synthetic-run-1-attempt-001"
+'
+
 # Stateful DB, stateless Flask: process restart must not lose the incident.
 docker compose -f "$COMPOSE" restart api
 wait_for_ready
@@ -90,6 +126,10 @@ curl -fsS --max-time 5 "$BASE_URL/api/v1/incidents/$incident_id" |
 import json,sys
 item=json.load(sys.stdin)["incident"]
 assert item["title"]=="Synthetic SSH alert" and item["status"]=="investigating"
+'
+curl -fsS --max-time 5 "$events_url" | python3 -c '
+import json,sys
+assert len(json.load(sys.stdin)["events"])==1
 '
 
 # Pause PostgreSQL without removing its Compose DNS alias. Both the existing
@@ -102,6 +142,8 @@ status="$(curl -sS --max-time 8 -o /dev/null -w '%{http_code}' "$BASE_URL/readyz
 status="$(curl -sS --max-time 8 -o /dev/null -w '%{http_code}' \
   "$BASE_URL/api/v1/incidents/$incident_id")"
 [[ "$status" == 503 ]] || { echo "Expected incident API 503; got $status" >&2; exit 1; }
+status="$(curl -sS --max-time 8 -o /dev/null -w '%{http_code}' "$events_url")"
+[[ "$status" == 503 ]] || { echo "Expected security events API 503; got $status" >&2; exit 1; }
 
 docker compose -f "$COMPOSE" unpause postgres
 wait_for_ready
@@ -111,4 +153,9 @@ import json,sys
 item=json.load(sys.stdin)["incident"]
 assert item["status"]=="investigating" and item["source"]=="manual"
 '
-echo 'PASS: migration rerun; incident create/list/update; process restart; DB outage/recovery; original health contracts'
+curl -fsS --max-time 5 "$events_url" | python3 -c '
+import json,sys
+items=json.load(sys.stdin)["events"]
+assert len(items)==1 and items[0]["username"]=="root"
+'
+echo 'PASS: both schema migrations; incident and event persistence; idempotent replay and 409; restart; DB outage/recovery; health contracts'

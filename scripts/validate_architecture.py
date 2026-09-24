@@ -88,6 +88,8 @@ def main() -> None:
             "LabOps API must be routed via the existing operator-restricted web tier")
     require("0001_incidents.sql" in playbook and "db.py" in playbook,
             "Both AWS app runtimes require shared LabOps schema and Python module")
+    require("0002_security_events.sql" in playbook,
+            "LabOps event schema must be migrated on the dedicated PostgreSQL tier")
     require("lab_app_port | default(8000) | int" in smoke,
             "Smoke test must select the same backend port as Nginx")
 
