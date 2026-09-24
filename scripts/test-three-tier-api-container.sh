@@ -16,6 +16,10 @@ for cmd in docker curl python3; do
 done
 
 cleanup() {
+  local status=$?
+  if (( status != 0 )); then
+    docker compose -f "$COMPOSE" logs --tail 100 api postgres >&2 || true
+  fi
   docker compose -f "$COMPOSE" down -v --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
