@@ -2,8 +2,8 @@
 
 LabOps is the application built **on** the disposable AWS three-tier lab. It
 does not modify LaunchShell, TorKit, or any Hetzner staging service. The incident-management and sanitized synthetic Cowrie event-ingestion milestones
-form the basis for future controlled SOAR playbooks; **no automation or
-security response is executed yet**.
+now support a read-only investigation workflow; **no security response is
+executed, and this is not a full SOAR platform**.
 
 ## Application contract
 
@@ -127,6 +127,48 @@ Docker integration test runs both migrations twice before starting Flask.
 
 **Operational boundary:** This is manual, explicitly incident-linked
 ingestion. It does not fetch from T-Pot, auto-correlate incidents, enrich IPs,
-execute playbooks, call AWS, or change firewalls. Those are separately scoped
+execute response actions, call AWS, or change firewalls. Those are separately scoped
 and will require authorization, authentication and TLS before exposing a
 sensitive or remotely accessible ingestion interface.
+
+
+## Read-only investigation: failed SSH logins (PR #5)
+
+The first security investigation uses the same sanitized, explicitly
+incident-linked Cowrie events already stored in PostgreSQL. It performs
+deterministic analysis, not a network scan, attribution, enrichment call,
+notification, firewall update, or incident-status change.
+
+~~~http
+GET /api/v1/incidents/{incident_uuid}/investigations/ssh-login-failures?as_of=2026-09-24T12:30:00Z&window_minutes=60&threshold=5
+~~~
+
+Parameters: window_minutes is 1–1440 (default 60); threshold is 2–1000
+(default 5); as_of is optional, defaults to current UTC and accepts only
+timezone-aware ISO-8601 timestamps. Supplying as_of explicitly makes the
+investigation reproducible for automated tests and incident review.
+
+The queried interval includes both its start and end. Only
+cowrie.login.failed events associated with that incident are included.
+PostgreSQL groups by the INET source address and returns failed-login count,
+distinct attempted usernames, earliest/latest event times, and stable
+ordering by descending failure count then IP text. Every source receives
+threshold_met as an *investigation signal*, **not proof of an attack**.
+
+The response also reports total_failed_logins and distinct_source_ips across
+ALL sources in the selected window. At most 100 source summaries are returned;
+source_ips_truncated discloses when more sources match so the capped list is
+not mistaken for a complete list. An empty window returns zero counts and
+an empty sources list, not a fabricated finding. response_executed is false.
+
+HTTP 400 covers invalid UUID/timestamp/limits; 404 means the incident
+does not exist; 503 means PostgreSQL is unavailable. No DB schema or extra
+packages are needed. A SQL SELECT with bound parameters performs the
+aggregation for both systemd and k3s. The Docker integration test covers
+two IPs, duplicate event replay, time window exclusions, changing the
+threshold, Flask restart, DB outage and restored results.
+
+**Evidence distinction:** GitHub Actions exercises the local Flask and
+PostgreSQL containers. The September 22/24 AWS runtime screenshots predate
+LabOps and do not prove this investigation ran on AWS. A future live AWS
+exercise requires separate explicit authorization and verified teardown.

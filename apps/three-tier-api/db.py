@@ -172,3 +172,59 @@ def list_incident_events(incident_id, limit):
                     (incident_id, limit),
                 )
                 return [_event_record(row) for row in cursor.fetchall()]
+
+
+def investigate_ssh_login_failures(incident_id, since, as_of):
+    """Read-only grouped failed-login evidence for one existing incident.
+
+    Both time bounds are inclusive. A 101st group is fetched only to make the
+    100-source display cap explicit; window totals cover ALL matching sources.
+    """
+    with closing(_connect()) as connection:
+        with connection:
+            with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(
+                    "SELECT 1 FROM incidents WHERE id = %s::uuid",
+                    (incident_id,),
+                )
+                if cursor.fetchone() is None:
+                    raise IncidentNotFound()
+
+                cursor.execute(
+                    "WITH source_counts AS ("
+                    " SELECT source_ip::text AS source_ip,"
+                    " COUNT(*) AS failed_logins,"
+                    " COUNT(DISTINCT username) AS distinct_usernames,"
+                    " MIN(observed_at) AS first_seen,"
+                    " MAX(observed_at) AS last_seen"
+                    " FROM security_events"
+                    " WHERE incident_id = %s::uuid"
+                    " AND event_type = 'cowrie.login.failed'"
+                    " AND observed_at >= %s AND observed_at <= %s"
+                    " GROUP BY source_ip"
+                    ")"
+                    " SELECT source_ip, failed_logins, distinct_usernames,"
+                    " first_seen, last_seen,"
+                    " SUM(failed_logins) OVER () AS total_failed_logins,"
+                    " COUNT(*) OVER () AS distinct_source_ips"
+                    " FROM source_counts"
+                    " ORDER BY failed_logins DESC, source_ip ASC LIMIT 101",
+                    (incident_id, since, as_of),
+                )
+                rows = cursor.fetchall()
+                sources = [
+                    {
+                        "source_ip": row["source_ip"],
+                        "failed_logins": int(row["failed_logins"]),
+                        "distinct_usernames": int(row["distinct_usernames"]),
+                        "first_seen": row["first_seen"].isoformat(),
+                        "last_seen": row["last_seen"].isoformat(),
+                    }
+                    for row in rows[:100]
+                ]
+                return {
+                    "total_failed_logins": int(rows[0]["total_failed_logins"]) if rows else 0,
+                    "distinct_source_ips": int(rows[0]["distinct_source_ips"]) if rows else 0,
+                    "source_ips_truncated": len(rows) > 100,
+                    "sources": sources,
+                }

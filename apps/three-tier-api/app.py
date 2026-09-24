@@ -1,7 +1,7 @@
 """Shared Flask API: health contracts and the first persistent LabOps incident workflow."""
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from ipaddress import ip_address
 from uuid import UUID
 
@@ -243,3 +243,74 @@ def list_incident_events(incident_id):
     except psycopg2.Error:
         return _db_error()
     return jsonify(events=events)
+
+
+def _bounded_int(raw, maximum, minimum=1):
+    if not raw.isascii() or not raw.isdecimal() or len(raw) > 4:
+        return None
+    value = int(raw)
+    return value if minimum <= value <= maximum else None
+
+
+@app.get("/api/v1/incidents/<incident_id>/investigations/ssh-login-failures")
+def investigate_ssh_login_failures(incident_id):
+    """Read-only, reproducible aggregation of sanitized failed-login events.
+
+    A threshold is an investigation signal, not proof of hostile intent.
+    This endpoint does not initiate a response or modify incident state.
+    """
+    identifier = _incident_id(incident_id)
+    if identifier is None:
+        return _error("validation_error", "Invalid incident UUID", 400)
+
+    minutes = _bounded_int(request.args.get("window_minutes", "60"), 1440)
+    threshold = _bounded_int(request.args.get("threshold", "5"), 1000, minimum=2)
+    if minutes is None or threshold is None:
+        return _error(
+            "validation_error",
+            "window_minutes must be 1-1440 and threshold must be 2-1000",
+            400,
+        )
+
+    raw_time = request.args.get("as_of")
+    if raw_time is None:
+        as_of = datetime.now(timezone.utc)
+    else:
+        if len(raw_time) > 40:
+            return _error("validation_error", "Invalid as_of timestamp", 400)
+        try:
+            as_of = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+            if as_of.tzinfo is None or as_of.utcoffset() is None:
+                raise ValueError("timezone required")
+            as_of = as_of.astimezone(timezone.utc)
+        except ValueError:
+            return _error("validation_error", "as_of must be an ISO-8601 timestamp with timezone", 400)
+
+    since = as_of - timedelta(minutes=minutes)
+    try:
+        result = db.investigate_ssh_login_failures(identifier, since, as_of)
+    except db.IncidentNotFound:
+        return _error("not_found", "Incident not found", 404)
+    except psycopg2.Error:
+        return _db_error()
+
+    sources = []
+    for row in result["sources"]:
+        sources.append({
+            **row,
+            "threshold_met": row["failed_logins"] >= threshold,
+        })
+
+    return jsonify(investigation={
+        "incident_id": identifier,
+        "event_type": COWRIE_EVENT,
+        "window_start": since.isoformat(),
+        "window_end": as_of.isoformat(),
+        "window_minutes": minutes,
+        "threshold": threshold,
+        "total_failed_logins": result["total_failed_logins"],
+        "distinct_source_ips": result["distinct_source_ips"],
+        "source_ips_truncated": result["source_ips_truncated"],
+        "sources": sources,
+        "response_executed": False,
+    })
