@@ -24,7 +24,7 @@ def require(condition: bool, message: str) -> None:
 def resource(name: str, source: str) -> str:
     match = re.search(
         r'^resource "[^"]+" "' + re.escape(name) +
-        r'" \\{(?P<body>.*?)(?=^resource |^data |^locals \\{|\\Z)',
+        r'" \{(?P<body>.*?)(?=^resource |^data |^locals \{|\Z)',
         source,
         flags=re.MULTILINE | re.DOTALL,
     )
@@ -55,21 +55,21 @@ def main() -> None:
     require('for_each                    = local.instances' in compute,
             "Original three-role EC2 resource must be retained")
     for role in ("web", "app", "db"):
-        require(re.search(r'^    ' + role + r' = \\{ subnet_id', compute, re.MULTILINE)
+        require(re.search(r'^    ' + role + r' = \{ subnet_id', compute, re.MULTILINE)
                 is not None, "AWS EC2 role missing: " + role)
 
     app_ingress = resource("app_http", networking)
     require('referenced_security_group_id = aws_security_group.web.id' in app_ingress,
             "App HTTP ingress must come only from web security group")
     for field in ("from_port", "to_port"):
-        require(re.search(field + r'\\s*= var.app_runtime == "k3s" \\? 30080 : 8000',
+        require(re.search(field + r'\s*= var.app_runtime == "k3s" \? 30080 : 8000',
                           app_ingress) is not None,
                 "App SG " + field + " must choose NodePort 30080 / legacy 8000")
 
     db_ingress = resource("db_postgres", networking)
     require('referenced_security_group_id = aws_security_group.app.id' in db_ingress,
             "Database SG must admit only app-tier security group")
-    require(re.search(r'from_port\\s*= 5432', db_ingress) is not None,
+    require(re.search(r'from_port\s*= 5432', db_ingress) is not None,
             "DB ingress should be restricted to PostgreSQL TCP 5432")
 
     plays = yaml.safe_load(playbook)
