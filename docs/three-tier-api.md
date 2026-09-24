@@ -57,3 +57,10 @@ verified before k3s mode existed. The optional Kubernetes infrastructure was **s
 on September 24, 2026**. See the [k3s verification record](live-verification-2026-09-24.md)
 and [integrated runbook](kubernetes-k3s.md). The unrelated existing
 Hetzner staging server is not changed by either AWS lab mode.
+
+
+## First substantive workload: LabOps incidents
+
+The API now includes versioned PostgreSQL-backed incident create/list/get/update
+routes. The original health response JSON and database-independent /healthz
+remain unchanged. See [LabOps design, API contracts and limitations](labops.md).

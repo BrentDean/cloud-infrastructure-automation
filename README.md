@@ -6,6 +6,8 @@
 
 **One AWS lab, two application runtimes, a verified end-to-end infrastructure lifecycle.**
 
+**New application milestone (pending live AWS regression verification):** LabOps adds a persistent, versioned Flask/PostgreSQL security incident API with manual incident creation, retrieval, triage updates, database constraints, local Docker restart/outage tests, and the same shared source in both AWS runtimes. It is a foundation for future SOAR workflows, **not a production SOAR service**. [LabOps API and security limitations →](docs/labops.md)
+
 Build a three-tier AWS environment from an empty VPC, configure the Linux hosts, deploy a database-backed Python API through either **Gunicorn/systemd** or **k3s**, verify allowed and denied network paths, and destroy the billable resources. The project is designed to be rebuilt on demand, **not** left running as a public production service.
 
 | Live deployment | Date | Result |

@@ -89,7 +89,7 @@ On your workstation, after reviewing the code and billable resources:
 
 ```bash
 cd /mnt/hyperV/projects/vps-infrastructure
-git switch feature/kubernetes-k3s-deployment
+git switch main
 
 # Confirm your intended AWS CLI profile, not an account root identity.
 AWS_PROFILE=vps-lab aws sts get-caller-identity

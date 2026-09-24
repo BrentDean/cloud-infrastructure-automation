@@ -84,6 +84,10 @@ def main() -> None:
     require("lab_app_port | default(8000)" in content,
             "Nginx must choose the runtime-specific backend port")
     require("location = /health" in content, "Original end-to-end health route must remain")
+    require("location ^~ /api/v1/" in content,
+            "LabOps API must be routed via the existing operator-restricted web tier")
+    require("0001_incidents.sql" in playbook and "db.py" in playbook,
+            "Both AWS app runtimes require shared LabOps schema and Python module")
     require("lab_app_port | default(8000) | int" in smoke,
             "Smoke test must select the same backend port as Nginx")
 
