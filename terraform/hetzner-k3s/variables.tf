@@ -36,3 +36,9 @@ variable "server_type" {
   type        = string
   default     = "cx23"
 }
+
+variable "existing_ssh_key_id" {
+  description = "Optional ID of an already registered Hetzner SSH key; avoids duplicate fingerprint errors when sharing an operator key with another VPS."
+  type        = number
+  default     = null
+}

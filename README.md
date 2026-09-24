@@ -76,7 +76,23 @@ new `/healthz` (process) and `/readyz` (database) endpoints support distinct
 Kubernetes liveness and readiness checks.
 
 See [application testing and architecture](docs/three-tier-api.md).
-The isolated k3s deployment code is available below; live VPS provisioning and\nend-to-end cluster validation must be performed separately.
+The isolated k3s deployment code is available below; live VPS provisioning and
+end-to-end cluster validation must be performed separately.
+
+## Isolated k3s Kubernetes lab
+
+[Terraform](terraform/hetzner-k3s/) defines **a separate disposable** Hetzner
+VM with an operator-/32 SSH-only cloud firewall. [Ansible](ansible/k3s/)
+installs k3s. [Kubernetes manifests](kubernetes/k3s/) deploy two replicas
+of the shared Flask API plus PostgreSQL with a local-path persistent volume.
+
+[Operator runbook and verification](docs/kubernetes-k3s.md) ·
+[Static validation workflow](.github/workflows/k3s-validation.yml).
+
+The k3s lab has not yet been deployed and verified live. GitHub Actions never
+uses cloud credentials or runs Terraform apply. No public application ingress
+or remote Kubernetes API is enabled. The existing TorKit staging VPS is not
+a deployment target.
 
 ## Hetzner VPS automation
 

@@ -3,6 +3,7 @@ locals {
 }
 
 resource "hcloud_ssh_key" "operator" {
+  count      = var.existing_ssh_key_id == null ? 1 : 0
   name       = "${var.name}-operator"
   public_key = local.operator_key
 }
@@ -20,14 +21,12 @@ resource "hcloud_firewall" "k3s" {
 }
 
 resource "hcloud_server" "k3s" {
-  name        = var.name
-  image       = "ubuntu-24.04"
-  server_type = var.server_type
-  location    = var.location
-  ssh_keys    = [hcloud_ssh_key.operator.id]
-  firewall_ids = [
-    hcloud_firewall.k3s.id
-  ]
+  name         = var.name
+  image        = "ubuntu-24.04"
+  server_type  = var.server_type
+  location     = var.location
+  ssh_keys     = [var.existing_ssh_key_id != null ? var.existing_ssh_key_id : hcloud_ssh_key.operator[0].id]
+  firewall_ids = [hcloud_firewall.k3s.id]
 
   public_net {
     ipv4_enabled = true
