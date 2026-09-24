@@ -28,3 +28,6 @@ ansible/inventory.ini
 brent-admin_credentials.csv
 **/id_ed25519
 **/*.pem
+
+# Local scratch work (repository root)
+/scratch/
