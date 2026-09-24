@@ -53,7 +53,7 @@ Use `API_TEST_PORT` to choose another free local port. Cleanup destroys
 
 Python and Docker integration tests do not provision AWS or k3s. The shared
 API was separately verified in containers; the original AWS systemd lab was
-verified before k3s mode existed. The optional Kubernetes infrastructure
-requires its **own live AWS run** before claiming deployment success. See
-[the integrated k3s runbook](kubernetes-k3s.md). The unrelated existing
+verified before k3s mode existed. The optional Kubernetes infrastructure was **separately live-verified in AWS
+on September 24, 2026**. See the [k3s verification record](live-verification-2026-09-24.md)
+and [integrated runbook](kubernetes-k3s.md). The unrelated existing
 Hetzner staging server is not changed by either AWS lab mode.

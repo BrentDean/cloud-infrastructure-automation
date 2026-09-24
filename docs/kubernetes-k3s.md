@@ -1,10 +1,10 @@
 # AWS three-tier infrastructure — optional private k3s application runtime
 
-**Implementation status:** opt-in Terraform, Ansible, Kubernetes manifests,
-operator scripts and CI static checks are committed to PR #2. The Kubernetes
-variant has **not yet been deployed and verified on a live AWS VPC**.
-The original systemd/Gunicorn three-tier lab was separately verified in
-September 2026; that historical result is not proof of the k3s variant.
+**Implementation status:** **live verified in AWS on September 24, 2026**.
+The private k3s application variant passed two-replica rollout, DB-backed
+health, network isolation, Pod-level PVC persistence and complete Terraform
+teardown (28 managed resources destroyed). See the [live verification record](live-verification-2026-09-24.md).
+The original systemd/Gunicorn variant was separately verified on September 22.
 
 ## Architecture
 
@@ -85,7 +85,7 @@ state directory while any AWS lab resource still exists.
 
 ## Launch and verify (explicitly billable)
 
-On your workstation, after reviewing draft PR #2:
+On your workstation, after reviewing the code and billable resources:
 
 ```bash
 cd /mnt/hyperV/projects/vps-infrastructure
@@ -97,7 +97,8 @@ AWS_PROFILE=vps-lab aws sts get-caller-identity
 # Check Docker access before any cloud provisioning:
 docker info >/dev/null
 
-# One command performs Terraform provision -> Ansible -> k3s ->
+# One command reproduces the September 24 live-verified path:
+# Terraform provision -> Ansible -> k3s ->
 # Kubernetes Service/DB/PVC checks -> negative network smoke ->
 # external /health verification -> Terraform destroy.
 AWS_PROFILE=vps-lab LAB_APP_RUNTIME=k3s \
@@ -173,16 +174,15 @@ bash -n scripts/k3s/*.sh scripts/run-aws-three-tier.sh
 ```
 
 The Kubernetes CI workflow and original AWS Terraform/Ansible workflow
-run automatically on PRs and never create cloud resources. Successful
-static checks and local Docker integration tests do **not** imply a
-successful live AWS k3s deployment. Capture actual logs from the
-billable run before claiming this architecture was tested.
+run automatically on PRs and never create cloud resources. Successful static checks and local Docker integration tests are distinct
+from the **September 24 live AWS deployment** documented in the
+[live verification record](live-verification-2026-09-24.md).
 
 ## Teardown and later milestones
 
 The original AWS runner attempts Terraform destroy even after failure.
 Use its printed recovery command if teardown fails. Retain any needed
-evidence **after verifying no billable lab resources remain**. Project 1
-PR #3 will add further rollout/recovery exercises; Project 2 adds
-CloudWatch/IAM/incident response; Project 3 will add a genuinely
-independent PostgreSQL backup and rebuild test with measured RPO/RTO.
+evidence **after verifying no billable lab resources remain**. Planned extensions to this same portfolio asset include Kubernetes
+rollout/failure-recovery exercises, CloudWatch/IAM incident response,
+and a genuinely independent PostgreSQL backup/rebuild test with measured
+RPO/RTO. These are not part of the completed September 24 verification.

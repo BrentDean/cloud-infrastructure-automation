@@ -1,7 +1,8 @@
 # Architecture decisions: one coherent, disposable AWS portfolio lab
 
-Status: September 2026. This record explains the current implementation and
-its limits; it does not claim the optional k3s mode has passed live testing.
+Status: September 24, 2026. Both systemd and optional k3s modes have passed
+separate live AWS tests. This record explains the implementation and its limits;
+see the [September 24 k3s verification record](live-verification-2026-09-24.md).
 
 ## 1. Reuse one three-tier AWS topology
 
@@ -64,10 +65,11 @@ later milestone.
 ## 5. Make test claims match observed evidence
 
 Keep original AWS systemd deployment results and timestamps separate from
-new k3s results. The k3s code/CI is an implementation milestone; a real
-AWS run must demonstrate node readiness, two Flask replicas, Service
-routing, a DB-backed request through Nginx, EBS-backed dedicated DB, PVC
-marker survival and successful cleanup before claiming live verification.
+new k3s results. The September 24 live AWS run demonstrated node readiness, two Flask replicas,
+Service routing, a DB-backed request through Nginx, a dedicated PostgreSQL
+EC2, PVC marker survival across evidence Pod recreation, and successful
+cleanup of 28 Terraform resources. The database host uses encrypted EBS;
+this is not an independent, off-instance database backup.
 
 The next connected milestones should extend the **same topology and
 evidence workflow**: Kubernetes rollout/failure recovery; least-privilege

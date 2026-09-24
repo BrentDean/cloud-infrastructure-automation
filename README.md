@@ -1,117 +1,150 @@
 # Cloud Infrastructure Automation
 
-[![AWS three-tier validation](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/aws-three-tier-validation.yml/badge.svg?branch=main)](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/aws-three-tier-validation.yml)
-[![Python API validation](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/python-api-validation.yml/badge.svg?branch=main)](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/python-api-validation.yml)
+[![AWS three-tier validation](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/aws-three-tier-validation.yml/badge.svg)](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/aws-three-tier-validation.yml)
+[![Shared Python API validation](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/python-api-validation.yml/badge.svg)](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/python-api-validation.yml)
+[![AWS k3s mode validation](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/k3s-validation.yml/badge.svg)](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/k3s-validation.yml)
 
-**A reproducible, disposable AWS infrastructure lab:** provision three isolated
-EC2 tiers with Terraform; configure Linux services with Ansible; deploy the
-same database-backed Python API using either systemd/Gunicorn or optional k3s;
-test real network boundaries and application health; retain private run
-evidence; and destroy billable infrastructure when finished.
+**One AWS lab, two application runtimes, a verified end-to-end infrastructure lifecycle.**
 
-The point is the *entire infrastructure lifecycle*, not a permanently hosted
-demo endpoint. The original systemd variant was deployed and verified on
-**September 22, 2026**. The k3s variant is implemented in
-[draft PR #2](https://github.com/BrentDean/cloud-infrastructure-automation/pull/2)
-and must still pass a live AWS run before being described as deployed.
+Build a three-tier AWS environment from an empty VPC, configure the Linux hosts, deploy a database-backed Python API through either **Gunicorn/systemd** or **k3s**, verify allowed and denied network paths, and destroy the billable resources. The project is designed to be rebuilt on demand, **not** left running as a public production service.
 
-## Architecture
+| Live deployment | Date | Result |
+| --- | --- | --- |
+| Original Gunicorn/systemd mode | September 22, 2026 | 28 resources created; application/DB tests passed; Ansible second pass `changed=0` on all three hosts; 28 destroyed |
+| Private k3s mode | **September 24, 2026** | **2/2 non-root Flask Pods**, NodePort and DB-backed health checks passed, test PVC survived Pod replacement, web-to-DB isolation passed, configured-tier Ansible second pass `changed=0`, **28 resources destroyed** |
 
-```text
-Linux workstation (Terraform + Ansible + Docker + AWS CLI)
-     |
-     | SSH and demo HTTP from operator's public IPv4 /32 only
-     v
-Public EC2  | Nginx reverse proxy + SSH bastion
-     |
-     | Private application SG allows only this web tier
-     | TCP 8000 (systemd) or TCP 30080 (k3s NodePort)
-     v
-Private app EC2
-     |-- baseline: Flask / Gunicorn / systemd
-     `-- opt-in: k3s / Flask Deployment (2 Pods) / Service / probes
-                    |
-     | PostgreSQL TCP 5432, permitted from app SG only
-     v
-Private DB EC2 | PostgreSQL 16 / encrypted gp3 EBS
+[**Live k3s verification record →**](docs/live-verification-2026-09-24.md) · [AWS deployment runbook](docs/aws-three-tier.md) · [k3s runbook](docs/kubernetes-k3s.md) · [Architecture decisions](docs/architecture-decisions.md)
+
+## Architecture at a glance
+
+```mermaid
+flowchart TD
+  Operator["Linux workstation<br/>AWS CLI · Terraform · Ansible · Docker"]
+  Internet["Operator public IPv4 /32"]
+  Web["Public subnet: web EC2<br/>Nginx · SSH bastion"]
+  App["Private app subnet: app EC2<br/>systemd/Gunicorn OR single-node k3s"]
+  Pods["k3s: Flask Deployment<br/>2 non-root Pods · readiness/liveness probes"]
+  Database["Private DB subnet: DB EC2<br/>PostgreSQL 16 · encrypted gp3 EBS"]
+  NAT["NAT gateway<br/>outbound package access"]
+  Operator --> Internet --> Web
+  Web -->|"TCP 8000 systemd / 30080 k3s<br/>web security group only"| App
+  App --> Pods
+  App -->|"TCP 5432<br/>app security group only"| Database
+  NAT -. "private subnet outbound" .-> App
+  NAT -. "private subnet outbound" .-> Database
 ```
 
-One VPC, three subnets, security-group-segmented traffic, public Internet
-gateway, NAT gateway for private package installation, and one ephemeral
-SSH key. The application and database EC2s have no public IPs. No EKS,
-extra k3s server, public Kubernetes API, or public database endpoint.
+One `10.20.0.0/16` VPC; a public subnet for the web tier; separate private subnets for application and database; an internet gateway and NAT gateway; and ephemeral operator SSH credentials. Neither the app nor DB EC2 has a public IP. Web HTTP/SSH ingress is restricted to the operator's current IPv4 `/32`. This is **single-AZ, single-node k3s**, not EKS, multi-node HA or a production-ready public API.
 
-| Engineering concern | Implementation |
+### Same application, two deployment paths
+
+| Concern | Original AWS mode | AWS k3s mode |
+| --- | --- | --- |
+| Application host | Private EC2, `t3.small` by default | **Same private app tier**, `t3.medium` by default |
+| Application | Flask served by Gunicorn and systemd | Same Flask source packaged into a non-root Docker image |
+| HTTP backend | TCP `8000` | Kubernetes Service/NodePort `30080`, only from web SG |
+| Process/workload management | systemd | Single-node k3s, Deployment with two Pods, probes |
+| Database | Dedicated private PostgreSQL 16 EC2 | **The same dedicated private PostgreSQL EC2** |
+| Public entry | Operator-/32 Nginx `/health` | Same Nginx web server and SSH bastion |
+| Lifecycle | Terraform → Ansible → tests → destroy | Terraform → Ansible → k3s → Kubernetes → tests → destroy |
+
+The extra **1 GiB local-path PVC** belongs to a disposable *evidence Pod*, not PostgreSQL. The test confirms that a file survives **Pod deletion and recreation on the same node**; it does not claim survival of EC2 destruction. [Rationale and limitations →](docs/architecture-decisions.md)
+
+## Live AWS k3s verification — September 24, 2026
+
+The following results are from the **billable AWS deployment**, not just GitHub Actions or offline manifest validation.
+
+```text
+AWS Terraform apply          28 resources added; 0 errors
+Private k3s node             Ready
+Flask Deployment             2/2 available
+Kubernetes Service           NodePort 80:30080/TCP
+Evidence PVC                 Bound (1 GiB, local-path)
+
+PASS /healthz                process liveness
+PASS /readyz                 database-backed readiness
+PASS /health                 dedicated PostgreSQL SELECT 1
+PASS                        non-root Flask replicas and Service/DNS
+PASS                        PVC marker after evidence Pod deletion/recreation
+PASS                        workstation → Nginx → k3s → PostgreSQL SELECT 1
+PASS                        web → app allowed; app → DB allowed
+PASS                        direct web → PostgreSQL blocked
+PASS                        second Ansible configuration: changed=0 (web, DB)
+
+Terraform destroy            28 resources destroyed
+```
+
+The first Ansible pass configured PostgreSQL and Nginx; [`ansible/k3s/install.yml`](ansible/k3s/install.yml) installed k3s on the private app EC2. The second configuration pass verified idempotency on the **web and DB plays**; the systemd app play was intentionally skipped in k3s mode. The live test does not establish HA, a full k3s re-run idempotency test, or off-node disaster recovery.
+
+[Full verification details, checks and evidence-handling notes →](docs/live-verification-2026-09-24.md)
+
+## Engineering capabilities demonstrated
+
+| Area | Implemented and exercised |
 | --- | --- |
-| Provision and teardown | [Terraform AWS three-tier root](terraform/aws-three-tier/), [ephemeral runner](scripts/run-aws-three-tier.sh) |
-| Configuration and verification | [Ansible plays](ansible/aws-three-tier/) and [app-tier k3s install](ansible/k3s/install.yml) |
-| Shared application | [Flask API + container](apps/three-tier-api/) with `/health`, `/healthz`, `/readyz` |
-| Workload orchestration | [Kubernetes manifests](kubernetes/k3s/): two replicas, probes, private-only NodePort |
-| Storage exercise | Local-path PVC survives a test Pod replacement; **PostgreSQL stays on DB EC2** |
-| Checks | [AWS IaC CI](.github/workflows/aws-three-tier-validation.yml), [Python/container CI](.github/workflows/python-api-validation.yml), [k3s contract CI](.github/workflows/k3s-validation.yml) |
-| Security boundaries | Operator-/32 web ingress; SG-limited app/database ingress; non-root API container; runtime-only DB credential |
-| Reproducibility | Fresh per-run SSH key and Terraform state, Ansible idempotency, smoke tests, destroy/recovery script |
+| AWS networking | VPC, three subnets, IGW, NAT/EIP, routing, EC2 roles, scoped security groups, ephemeral SSH bastion |
+| Infrastructure as Code | Terraform plan/apply/output/destroy, state isolation per run, cleanup recovery, runtime-dependent app sizing and ingress |
+| Linux automation | Ansible apt, config files, systemd services, handlers, cloud-init waits, repeatable configuration, idempotency check |
+| Containers and Kubernetes | Docker build, private SSH image transfer, containerd import, k3s, Namespace, Deployment, Service, NodePort, health probes |
+| Application integration | Shared Flask source, dedicated PostgreSQL 16, DB-backed health API and app credentials supplied at runtime |
+| Security controls | Web /32, no public app/DB IP, explicit denied-path test, non-root containers, runtime-only Kubernetes Secret, encrypted EBS |
+| Storage testing | Test-only local-path PVC marker retained after Pod replacement; no DR claim |
+| CI and test automation | Python API tests, local Docker/PostgreSQL outage/recovery, Terraform/Ansible validation, offline k3s/cross-layer contract checks |
+| Operational lifecycle | Real AWS smoke tests, machine-readable evidence, best-effort automatic destruction and manual recovery if needed |
 
-[Architecture decisions and trade-offs](docs/architecture-decisions.md) ·
-[Original AWS architecture and runbook](docs/aws-three-tier.md) ·
-[Optional k3s runbook](docs/kubernetes-k3s.md) ·
-[API contract and local tests](docs/three-tier-api.md)
+**The application health endpoints have different jobs:** `/healthz` checks process liveness without requiring PostgreSQL; `/readyz` performs a real `SELECT 1` and can mark a Pod unready during a DB outage; `/health` preserves the original Nginx-to-database verification contract. [API tests and endpoint behavior →](docs/three-tier-api.md)
 
-## Verification record — distinguish observed from planned
+## Architecture, code and operator workflow
 
-| Capability | Evidence and status |
+| Component | Source |
 | --- | --- |
-| Original AWS three-tier deployment | **Verified September 22, 2026** in `us-east-1`; 28 AWS resources provisioned and destroyed |
-| Three-tier Ansible configuration | Verified on all three original EC2 hosts; second pass `changed=0` |
-| Network boundaries | Original web→app, app→DB allowed; direct web→DB denied |
-| End-to-end API | Original workstation→Nginx→Flask→PostgreSQL returned `SELECT 1` |
-| Shared API container | Python tests and isolated Docker/PostgreSQL outage/recovery integration passed |
-| AWS k3s optional mode | Code and offline CI implemented; **live deployment not yet verified** |
-| k3s rolling updates and failure injection | Follow-up exercise; do not claim operational verification yet |
-| CloudWatch/IAM/incident exercise | Planned next portfolio milestone |
-| Independent PostgreSQL backup and restore with measured RPO/RTO | Planned disaster-recovery milestone |
+| AWS VPC, subnets, EC2, SGs, NAT and volumes | [`terraform/aws-three-tier/`](terraform/aws-three-tier/) |
+| Full lifecycle orchestrator | [`scripts/run-aws-three-tier.sh`](scripts/run-aws-three-tier.sh) |
+| PostgreSQL, systemd application and Nginx configuration | [`ansible/aws-three-tier/configure.yml`](ansible/aws-three-tier/configure.yml) |
+| Private Kubernetes installer | [`ansible/k3s/install.yml`](ansible/k3s/install.yml) |
+| Kubernetes Deployment, Service and test PVC | [`kubernetes/k3s/`](kubernetes/k3s/) |
+| Image deployment and live Kubernetes assertions | [`scripts/k3s/aws-deploy.sh`](scripts/k3s/aws-deploy.sh), [`aws-verify.sh`](scripts/k3s/aws-verify.sh) |
+| Three-tier connectivity and negative security checks | [`ansible/aws-three-tier/smoke-test.yml`](ansible/aws-three-tier/smoke-test.yml) |
+| Shared Flask application and container | [`apps/three-tier-api/`](apps/three-tier-api/) |
+| Cross-layer and workflow validation | [`scripts/validate_architecture.py`](scripts/validate_architecture.py), [`.github/workflows/`](.github/workflows/) |
 
-Historical evidence from the verified **systemd** run is below. The existing
-screenshots must not be represented as Kubernetes deployment evidence.
+### Reproduce an ephemeral live run
 
-![Three AWS EC2 instances passing status checks](screenshots/aws-three-tier/01-ec2-instances.png)
-
-![Static GitHub Actions checks](screenshots/aws-three-tier/02-github-actions-success.png)
-
-![Provisioning, Ansible idempotency and network checks](screenshots/aws-three-tier/03-verified-run-results.png)
-
-## Run a disposable lab
-
-**Creating the VPC, NAT gateway, EIP and three EC2 instances incurs AWS
-charges.** Check your AWS profile/account, quotas and prices first. Run from
-a workstation that can remain online through teardown.
+**AWS charges apply** (particularly EC2, NAT gateway, EBS and public IPv4). Use a non-root AWS principal in the intended test account and keep your workstation online through teardown.
 
 ```bash
-# Existing verified deployment path: original Gunicorn/systemd application
+cd /path/to/cloud-infrastructure-automation
+
+AWS_PROFILE=vps-lab aws sts get-caller-identity
+docker info >/dev/null
+
+# Original verified application runtime
 AWS_PROFILE=vps-lab bash scripts/run-aws-three-tier.sh --run
 
-# Optional Kubernetes application variant from PR #2 (live test pending)
+# Same AWS topology with k3s on the private app tier
 AWS_PROFILE=vps-lab LAB_APP_RUNTIME=k3s \
   bash scripts/run-aws-three-tier.sh --run
 ```
 
-The runner restricts web access to the current operator IPv4 /32,
-rejects AWS root credentials, creates an isolated private run directory,
-configures and verifies infrastructure, then **attempts Terraform destroy
-even on test failure**. If destroy fails, use the printed manual recovery
-command and confirm cloud resources are actually gone. An AWS Budget
-alert is not a spending cap, and automated workstation cleanup cannot
-recover from a workstation power loss.
+NAT gateway creation typically takes **approximately 2–5 minutes** (sometimes longer). The runner limits inbound traffic to the operator `/32`, rejects root credentials, generates a fresh SSH key/database password, saves evidence to a private per-run directory, and **attempts Terraform destroy even on failure**. If teardown fails, use [the manual recovery script](scripts/destroy-aws-three-tier.sh) and retain the private state until resources are gone. An AWS Budget alert does not shut down resources.
 
-Terraform state, temporary SSH keys, database credentials and raw run
-evidence belong **outside Git**. See
-[the AWS runbook](docs/aws-three-tier.md) for cleanup and account checks.
-GitHub Actions does not run `terraform apply` or `terraform destroy`.
+**GitHub Actions performs non-billable checks; it never provisions this AWS lab.** Do not publish Terraform state, private SSH keys, passwords, or raw private run directories.
 
-## Supporting operational automation
+## Evidence and project boundaries
 
-The repository retains [Ansible backup automation](ansible/backup.yml)
-and [infrastructure audit automation](ansible/audit.yml) for the
-**separate existing Hetzner staging VPS**. They are not a deployment
-target for the AWS k3s work, and the abandoned standalone Hetzner
-Kubernetes proposal is not part of this project.
+The original **September 22 systemd deployment** is pictured below. These images are historical baseline evidence, **not screenshots of the September 24 k3s run**.
+
+<details>
+<summary>View original systemd-mode AWS screenshots</summary>
+
+![Original three EC2 instances](screenshots/aws-three-tier/01-ec2-instances.png)
+
+![Original AWS workflow checks](screenshots/aws-three-tier/02-github-actions-success.png)
+
+![Original systemd run results](screenshots/aws-three-tier/03-verified-run-results.png)
+
+</details>
+
+**Implemented and live-tested:** the two AWS runtime modes and the checks documented above. **Not yet implemented or verified:** Kubernetes update/failure-injection exercises; CloudWatch alerting/incident response and dedicated least-privilege IAM roles for the lab; independent PostgreSQL backup/rebuild with measured RPO/RTO. Those are the next extensions of this *same architecture*, not separate unrelated demos.
+
+The repository also includes [Ansible staging-server backups](ansible/backup.yml) and [infrastructure audits](ansible/audit.yml) for an **existing, separate Hetzner VPS**. The disposable AWS runner does **not** connect to or modify that server.
