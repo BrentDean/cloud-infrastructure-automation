@@ -24,7 +24,7 @@ trap cleanup EXIT
 docker compose -f "$COMPOSE" up -d postgres
 for ((attempt=1; attempt<=60; attempt++)); do
   if docker compose -f "$COMPOSE" exec -T postgres \
-      pg_isready -U labuser -d labdb >/dev/null 2>&1; then
+      psql -U labuser -d labdb -tAc 'SELECT 1' >/dev/null 2>&1; then
     break
   fi
   if (( attempt == 60 )); then
