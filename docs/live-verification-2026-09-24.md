@@ -56,6 +56,34 @@ Destroy complete! Resources: 28 destroyed.
 
 This is a condensed excerpt based on the captured September 24 operator output, not a verbatim copy of one contiguous log block. Detailed machine logs were retained in the private evidence directory on the operator workstation.
 
+## Screenshots from the live run
+
+The screenshots below were captured during the **September 24 k3s deployment**. The [original systemd-mode screenshots](../screenshots/aws-three-tier/01-ec2-instances.png) are a separate historical baseline.
+
+### 1. Kubernetes workloads and functional verification
+
+![Live AWS k3s: Ready node, 2/2 Flask Deployment, NodePort, Bound PVC and passing database and persistence checks](../screenshots/aws-three-tier/k3s/01-k3s-workloads-and-verification.png)
+
+The app EC2 reports a Ready single-node cluster, two running Flask replicas, an internal NodePort Service and the bound test volume. The verification output below the workload table shows endpoint checks and Pod-level persistence.
+
+### 2. Network boundaries and database-backed API
+
+![Ansible smoke tests: private app reaches PostgreSQL, web reaches application, direct web to database blocked and DB-backed Nginx response passes](../screenshots/aws-three-tier/k3s/02-network-boundaries-and-database-smoke.png)
+
+The positive and negative checks establish the intended paths: web → app and app → DB permitted; web → DB denied.
+
+### 3. Configuration idempotency
+
+![Second Ansible configuration pass reports changed=0 for the web and database tiers](../screenshots/aws-three-tier/k3s/03-ansible-idempotency.png)
+
+The repeated configuration pass produced no changes on web or DB. The systemd app play was intentionally omitted for the k3s deployment.
+
+### 4. AWS teardown
+
+![Terraform shows successful destruction of all 28 resources, including the NAT gateway](../screenshots/aws-three-tier/k3s/04-terraform-destroy-28-resources.png)
+
+The teardown includes the NAT gateway and ends with `Destroy complete! Resources: 28 destroyed.` A completed Terraform destroy is the direct evidence for this specific run; account-wide VPC dashboard totals are not used as proof of resource cleanup.
+
 ## What the evidence does—and does not—establish
 
 - **Does:** prove a real single-AZ AWS deployment, private Kubernetes workload, two working replicas, end-to-end DB connectivity, a denied network path, Pod-level PVC persistence and full Terraform teardown.

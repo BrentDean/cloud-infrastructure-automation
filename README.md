@@ -78,6 +78,18 @@ The first Ansible pass configured PostgreSQL and Nginx; [`ansible/k3s/install.ym
 
 [Full verification details, checks and evidence-handling notes →](docs/live-verification-2026-09-24.md)
 
+### Visual evidence from the live run
+
+**Private Kubernetes workloads and checks.** A Ready k3s node, two available Flask Pods, internal NodePort Service, Bound test PVC, health checks and successful end-to-end verification:
+
+[![Live AWS k3s workloads: Ready node, two Flask replicas, NodePort, PVC and passing checks](screenshots/aws-three-tier/k3s/01-k3s-workloads-and-verification.png)](screenshots/aws-three-tier/k3s/01-k3s-workloads-and-verification.png)
+
+**Automated teardown.** The runner destroyed all 28 Terraform-managed resources after the tests:
+
+[![Terraform destroy completed: 28 AWS resources destroyed](screenshots/aws-three-tier/k3s/04-terraform-destroy-28-resources.png)](screenshots/aws-three-tier/k3s/04-terraform-destroy-28-resources.png)
+
+[View the complete four-image evidence set: Kubernetes, network security, Ansible idempotency and teardown →](docs/live-verification-2026-09-24.md#screenshots-from-the-live-run)
+
 ## Engineering capabilities demonstrated
 
 | Area | Implemented and exercised |
