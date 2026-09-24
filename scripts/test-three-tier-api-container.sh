@@ -118,6 +118,73 @@ items=json.load(sys.stdin)["events"]
 assert len(items)==1 and items[0]["source_event_id"]=="synthetic-run-1-attempt-001"
 '
 
+
+echo '=== Read-only failed-login investigation: aggregation and time-window boundaries ==='
+INCIDENT_ID="$incident_id" python3 - <<'PY'
+import json
+import os
+from urllib.request import Request, urlopen
+
+root = f"http://127.0.0.1:{os.environ['API_TEST_PORT']}/api/v1/incidents/{os.environ['INCIDENT_ID']}"
+events = root + "/events"
+investigation = root + "/investigations/ssh-login-failures"
+
+
+def create_event(event_id, ip, username, observed_at):
+    payload = json.dumps({
+        "source": "cowrie",
+        "event_type": "cowrie.login.failed",
+        "source_event_id": event_id,
+        "source_ip": ip,
+        "username": username,
+        "observed_at": observed_at,
+    }).encode()
+    req = Request(events, data=payload, headers={"Content-Type": "application/json"})
+    with urlopen(req, timeout=8) as response:
+        assert response.status == 201
+        return json.load(response)["event"]
+
+
+def investigate(query):
+    with urlopen(investigation + query, timeout=8) as response:
+        assert response.status == 200
+        return json.load(response)["investigation"]
+
+
+for attempt in range(2, 6):
+    create_event(f"synthetic-run-1-attempt-{attempt:03d}", "198.51.100.23",
+                 "root" if attempt == 2 else "admin", "2026-09-24T12:00:00Z")
+create_event("synthetic-second-ip", "203.0.113.7", "root", "2026-09-24T12:05:00Z")
+create_event("synthetic-too-old", "198.51.100.23", "root", "2026-09-24T10:00:00Z")
+create_event("synthetic-future", "198.51.100.23", "root", "2026-09-24T13:00:00Z")
+
+query = "?as_of=2026-09-24T12:30:00Z&window_minutes=60&threshold=5"
+report = investigate(query)
+assert report["window_start"] == "2026-09-24T11:30:00+00:00"
+assert report["window_end"] == "2026-09-24T12:30:00+00:00"
+assert report["total_failed_logins"] == 6
+assert report["distinct_source_ips"] == 2
+assert report["source_ips_truncated"] is False
+assert report["response_executed"] is False
+assert len(report["sources"]) == 2
+assert report["sources"][0]["source_ip"] == "198.51.100.23"
+assert report["sources"][0]["failed_logins"] == 5
+assert report["sources"][0]["distinct_usernames"] == 2
+assert report["sources"][0]["threshold_met"] is True
+assert report["sources"][1]["source_ip"] == "203.0.113.7"
+assert report["sources"][1]["failed_logins"] == 1
+assert report["sources"][1]["threshold_met"] is False
+
+higher = investigate("?as_of=2026-09-24T12:30:00Z&threshold=6")
+assert higher["total_failed_logins"] == 6
+assert not any(source["threshold_met"] for source in higher["sources"])
+empty = investigate("?as_of=2026-09-24T12:30:00Z&window_minutes=10")
+assert empty["total_failed_logins"] == 0 and empty["sources"] == []
+print("PASS: deterministic read-only investigation; per-source threshold, replay, and time filtering")
+PY
+
+investigation_url="$BASE_URL/api/v1/incidents/$incident_id/investigations/ssh-login-failures?as_of=2026-09-24T12:30:00Z"
+
 # Stateful DB, stateless Flask: process restart must not lose the incident.
 docker compose -f "$COMPOSE" restart api
 wait_for_ready
@@ -129,7 +196,12 @@ assert item["title"]=="Synthetic SSH alert" and item["status"]=="investigating"
 '
 curl -fsS --max-time 5 "$events_url" | python3 -c '
 import json,sys
-assert len(json.load(sys.stdin)["events"])==1
+assert len(json.load(sys.stdin)["events"])==8
+'
+curl -fsS --max-time 5 "$investigation_url" | python3 -c '
+import json,sys
+report=json.load(sys.stdin)["investigation"]
+assert report["total_failed_logins"]==6 and report["sources"][0]["failed_logins"]==5
 '
 
 # Pause PostgreSQL without removing its Compose DNS alias. Both the existing
@@ -144,6 +216,8 @@ status="$(curl -sS --max-time 8 -o /dev/null -w '%{http_code}' \
 [[ "$status" == 503 ]] || { echo "Expected incident API 503; got $status" >&2; exit 1; }
 status="$(curl -sS --max-time 8 -o /dev/null -w '%{http_code}' "$events_url")"
 [[ "$status" == 503 ]] || { echo "Expected security events API 503; got $status" >&2; exit 1; }
+status="$(curl -sS --max-time 8 -o /dev/null -w '%{http_code}' "$investigation_url")"
+[[ "$status" == 503 ]] || { echo "Expected investigation API 503; got $status" >&2; exit 1; }
 
 docker compose -f "$COMPOSE" unpause postgres
 wait_for_ready
@@ -156,6 +230,11 @@ assert item["status"]=="investigating" and item["source"]=="manual"
 curl -fsS --max-time 5 "$events_url" | python3 -c '
 import json,sys
 items=json.load(sys.stdin)["events"]
-assert len(items)==1 and items[0]["username"]=="root"
+assert len(items)==8 and items[0]["source_event_id"]=="synthetic-future"
 '
-echo 'PASS: both schema migrations; incident and event persistence; idempotent replay and 409; restart; DB outage/recovery; health contracts'
+curl -fsS --max-time 5 "$investigation_url" | python3 -c '
+import json,sys
+report=json.load(sys.stdin)["investigation"]
+assert report["total_failed_logins"]==6 and report["sources"][0]["threshold_met"]
+'
+echo 'PASS: incident/event persistence, repeatable SSH investigation, restart, DB outage/recovery, health contracts'
