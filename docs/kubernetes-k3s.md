@@ -22,6 +22,7 @@ labops -> sudo k3s kubectl -> infra-lab namespace
                                  | /readyz checks SELECT 1
                                  v
                ClusterIP :5432 -> PostgreSQL StatefulSet x1
+                          (headless governing Service)
                                  |
                          local-path PVC: 4Gi
 ```
@@ -29,7 +30,11 @@ labops -> sudo k3s kubectl -> infra-lab namespace
 Cloud firewall permits inbound TCP/22 from the operator IPv4 /32 only.
 Remote Kubernetes :6443, HTTP :80/:443 and PostgreSQL :5432 are not
 exposed by the firewall. The k3s packaged Traefik and ServiceLB are disabled.
-Kubernetes Services are ClusterIP. Use SSH + kubectl or a localhost-only
+Application and client-facing database Services are ClusterIP; an additional
+headless Service governs the PostgreSQL StatefulSet DNS identity. A
+NetworkPolicy permits inbound database traffic from API Pods on TCP/5432
+and denies inbound PostgreSQL traffic from other Pods. Use SSH + kubectl
+or a localhost-only
 SSH/kubectl port-forward for interaction.
 
 k3s local-path provisioning persists PostgreSQL data independently of a
@@ -142,9 +147,8 @@ curl -fsS http://127.0.0.1:18080/healthz
 curl -fsS http://127.0.0.1:18080/readyz
 ```
 
-Confirm HTTP/6443/5432 are absent from the Hetzner firewall. This does
-not mean that local pod-to-pod network restrictions were proved; an
-explicit NetworkPolicy/negative-path exercise is a later milestone.
+Confirm HTTP/6443/5432 are absent from the Hetzner firewall. The PostgreSQL NetworkPolicy configuration is present; an actual
+negative-path network test remains a later milestone.
 
 ## 4. Reproducibility and caveats
 

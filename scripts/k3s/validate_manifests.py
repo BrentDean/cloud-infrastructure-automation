@@ -17,6 +17,8 @@ for path in sorted((ROOT / "kubernetes" / "k3s").glob("*.yaml")):
 assert set(DOCS) == {
     ("Namespace", "infra-lab"),
     ("Service", "postgres"),
+    ("Service", "postgres-headless"),
+    ("NetworkPolicy", "postgres-app-only"),
     ("StatefulSet", "postgres"),
     ("Service", "three-tier-api"),
     ("Deployment", "three-tier-api"),
@@ -35,6 +37,13 @@ assert claim["metadata"]["name"] == "postgres-data"
 assert claim["spec"]["storageClassName"] == "local-path"
 assert claim["spec"]["resources"]["requests"]["storage"] == "4Gi"
 assert db["replicas"] == 1
+assert db["serviceName"] == "postgres-headless"
+assert DOCS[("Service", "postgres-headless")]["spec"]["clusterIP"] == "None"
+policy = DOCS[("NetworkPolicy", "postgres-app-only")]["spec"]
+assert policy["podSelector"]["matchLabels"] == {"app": "postgres"}
+assert policy["policyTypes"] == ["Ingress"]
+assert policy["ingress"][0]["from"][0]["podSelector"]["matchLabels"] == {"app": "three-tier-api"}
+assert policy["ingress"][0]["ports"][0]["port"] == 5432
 db_container = db["template"]["spec"]["containers"][0]
 db_password = next(x for x in db_container["env"] if x["name"] == "POSTGRES_PASSWORD")
 assert db_password["valueFrom"]["secretKeyRef"] == {"name": "db-auth", "key": "password"}

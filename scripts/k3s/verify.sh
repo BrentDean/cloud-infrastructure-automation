@@ -16,6 +16,7 @@ remote 'sudo k3s kubectl get nodes -o wide'
 remote 'sudo k3s kubectl get storageclass local-path'
 remote 'sudo k3s kubectl -n infra-lab get deploy,statefulset,svc,pvc,pods -o wide'
 remote 'sudo k3s kubectl -n infra-lab rollout status statefulset/postgres --timeout=180s'
+remote 'sudo k3s kubectl -n infra-lab get networkpolicy postgres-app-only'
 remote 'sudo k3s kubectl -n infra-lab rollout status deployment/three-tier-api --timeout=180s'
 pvc="$(remote 'sudo k3s kubectl -n infra-lab get pvc postgres-data-postgres-0 -o jsonpath={.status.phase}')"
 [[ "$pvc" == Bound ]] || { echo "PostgreSQL PVC not bound: $pvc" >&2; exit 1; }
@@ -35,4 +36,6 @@ for path in ("/healthz", "/readyz", "/health"):
             assert data["db"] == "connected" and data["db_result"] == 1, data
     print("PASS:", path)
 PY
-echo 'PASS: PVC Bound, application Service DNS, and PostgreSQL query'
+uid="$(remote 'sudo k3s kubectl -n infra-lab exec deployment/three-tier-api -- id -u')"
+[[ "$uid" == 10001 ]] || { echo "Unexpected Flask container UID: $uid" >&2; exit 1; }
+echo 'PASS: PVC Bound, application Service DNS, PostgreSQL query and non-root API'
