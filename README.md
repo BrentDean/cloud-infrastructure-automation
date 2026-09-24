@@ -90,6 +90,12 @@ The first Ansible pass configured PostgreSQL and Nginx; [`ansible/k3s/install.ym
 
 [View the complete four-image evidence set: Kubernetes, network security, Ansible idempotency and teardown →](docs/live-verification-2026-09-24.md#screenshots-from-the-live-run)
 
+### What the September 24 run actually deployed
+
+The retained terminal record confirms **Ubuntu 24.04.5 LTS** on the private app host, **k3s v1.36.4+k3s1** with containerd, a `Ready` control-plane node without an external IP, and a `2/2` Flask Deployment with **zero Pod restarts at verification**. The same run created a runtime namespace (`infra-lab`), a database-host ConfigMap, a database-authentication Secret, a private Service on `80:30080/TCP` and a **Bound** `1 GiB` test PVC. The image was built for EC2's amd64 platform and imported through the bastion rather than pulled from a public registry.
+
+The DB and web Ansible plays finished with `failed=0`, then both returned `changed=0` on the second pass. The network smoke tests checked an intentionally **denied** web→PostgreSQL connection as well as the allowed paths. AWS NAT gateway provisioning took **1m44s** and deletion **1m11s** in this particular run; these are observations, not guaranteed timings. [See the full sanitized run chronology →](docs/live-verification-2026-09-24.md#observed-deployment-sequence-and-runtime)
+
 ## Engineering capabilities demonstrated
 
 | Area | Implemented and exercised |

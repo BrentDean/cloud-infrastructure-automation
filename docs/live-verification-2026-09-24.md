@@ -16,6 +16,28 @@
 
 The workstation built the image, sent it through the existing web SSH bastion to the app host, and imported it into the private node's containerd image store. No EKS cluster, extra public server, or public container registry was required.
 
+## Observed deployment sequence and runtime
+
+These details come from the **operator's September 24 terminal transcript**, rather than inferred capability from static configuration alone. The table intentionally omits account numbers, transient public/private IPs, full SSH key names and credentials.
+
+| Step | Observed output |
+| --- | --- |
+| Terraform provisioning | `Apply complete! Resources: 28 added, 0 changed, 0 destroyed.` |
+| Gateway readiness | NAT gateway created in **1m44s**; private routing completed before launching EC2 |
+| EC2 and storage | Web `t3.small` / 12 GiB gp3; private app `t3.medium` / 24 GiB gp3; private DB `t3.small` / 12 GiB gp3. Root EBS volumes encrypted and deleted with their instances |
+| Initial Ansible pass | DB `ok=11 changed=6 failed=0`; web `ok=7 changed=4 failed=0` |
+| Private Kubernetes install | Ansible app recap `ok=10 changed=5 failed=0`; Kubernetes API and node readiness check passed |
+| Observed Kubernetes node | Ubuntu **24.04.5 LTS**, **k3s v1.36.4+k3s1**, containerd **2.3.4-k3s1.36**, reported `Ready` with no external IP |
+| Container delivery | Workstation Docker built `localhost/three-tier-api:pr2` for linux/amd64; image transferred through the existing SSH bastion to private k3s containerd |
+| Runtime configuration | Kubernetes namespace `infra-lab`; `db-endpoint` ConfigMap and `db-auth` Secret created at runtime, not committed with credentials |
+| Application rollout | `three-tier-api` Deployment successfully rolled out with `2/2` available; both API Pods displayed `1/1 Running` and **0 restarts** when inspected |
+| Service and evidence storage | `three-tier-api` NodePort `80:30080/TCP`; test PVC `lab-evidence` **Bound**, `1Gi`, `RWO`, `local-path`; evidence Pod `1/1 Running` |
+| Repeat Ansible pass | DB `ok=8 changed=0 failed=0`; web `ok=6 changed=0 failed=0` |
+| Gateway teardown | NAT gateway deletion completed in **1m11s**, followed by EIP/VPC cleanup |
+| Complete teardown | `Destroy complete! Resources: 28 destroyed.` |
+
+The recorded NAT times are **one run's measurements**, not a service-level expectation. The operating system and Kubernetes versions are also observations from that run, not a claim that future uses of the unpinned k3s stable channel will install the same version.
+
 ## Observed validation
 
 | Check | Observed outcome |
@@ -89,6 +111,14 @@ The teardown includes the NAT gateway and ends with `Destroy complete! Resources
 - **Does:** prove a real single-AZ AWS deployment, private Kubernetes workload, two working replicas, end-to-end DB connectivity, a denied network path, Pod-level PVC persistence and full Terraform teardown.
 - **Does not:** prove availability across Kubernetes nodes/AZs; a rolling-upgrade or deliberately induced failure recovery test; backup of PostgreSQL outside the DB EC2; persistence through EC2 deletion; a complete second-run idempotency check for all k3s resources; TLS for a publicly accessible application.
 - The PVC belongs to the **test-only evidence Pod**. The actual PostgreSQL database stays on the private DB EC2 and is destroyed with the ephemeral lab.
+
+
+
+### Verification nuances
+
+The original application Ansible play is skipped for k3s mode; the second-pass `changed=0` claim is specific to **web and DB**, while the separate k3s install play was verified by API/node readiness and workload rollout. Kubernetes readiness passed against dedicated PostgreSQL; process liveness is independent of a database query. The test PVC retained its marker across deletion and recreation of **only** `pvc-evidence`, with the claim preserved. Both API replicas run on **one EC2 node**, so `2/2` is a workload availability result, not multi-node or multi-AZ availability.
+
+The full transcript also contains unrelated TorKit operations and temporary operator tokens; those are **not part of this AWS evidence record** and should not be published as a raw unredacted file.
 
 ## Operational evidence handling
 
