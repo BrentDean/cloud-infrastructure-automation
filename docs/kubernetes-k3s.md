@@ -67,7 +67,10 @@ an isolated private Terraform state, generates a new ephemeral database
 password, and attempts destruction in its EXIT trap.
 
 AWS resources cost money during the run, especially the NAT gateway,
-EIP, three EC2 instances and EBS volumes. The app instance defaults to
+EIP, three EC2 instances and EBS volumes. NAT gateway provisioning commonly
+takes approximately **2–5 minutes** (sometimes longer). Terraform may print
+repeated `aws_nat_gateway.lab: Still creating...` lines during this stage;
+keep the runner open through testing and cleanup. The app instance defaults to
 `t3.medium` (two vCPU/four GiB), while web and DB remain `t3.small`
 unless overridden. Default local hold time is zero; `LAB_HOLD_MINUTES`
 may be 0–180. No GitHub Actions workflow provisions cloud resources.

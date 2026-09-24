@@ -44,6 +44,11 @@ Evidence (first and second Ansible passes, smoke test, external health JSON, run
 
 ## Cost and cleanup
 
+NAT gateway provisioning commonly takes approximately **2–5 minutes**
+(sometimes longer). Repeated `aws_nat_gateway.lab: Still creating...` lines
+are expected during this AWS resource creation step; keep the runner open
+until testing and Terraform teardown complete.
+
 Billable resources: three t3.small EC2 instances, three small gp3 EBS volumes, one NAT gateway + Elastic IP, one additional EC2 public IPv4, and applicable data processing / transfer. NAT incurs an hourly charge **even when idle**. `LAB_HOLD_MINUTES` is capped at 180. Run from a workstation that can stay online until destroy completes. `ExpiresAt` tag is **informational**: it does NOT trigger deletion. If the workstation loses power, Terraform cannot automatically destroy the cloud resources. Review the AWS console's EC2 instances, NAT gateways, Elastic IPs, and VPC after each lab run.
 
 If cleanup failed, use the printed run-directory path:

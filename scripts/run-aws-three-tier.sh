@@ -127,6 +127,8 @@ terraform -chdir="$WORK/terraform" fmt -check
 terraform -chdir="$WORK/terraform" validate -no-color
 terraform -chdir="$WORK/terraform" plan -input=false -no-color -out="$WORK/terraform/lab.tfplan"
 ARMED=1
+echo 'Provisioning AWS infrastructure: NAT gateway creation commonly takes approximately 2–5 minutes (sometimes longer).'
+echo 'Repeating "Still creating..." messages are normal; keep this terminal open through testing and teardown.'
 terraform -chdir="$WORK/terraform" apply -input=false -auto-approve -no-color "$WORK/terraform/lab.tfplan"
 
 WEB_IP="$(terraform -chdir="$WORK/terraform" output -raw web_public_ip)"
