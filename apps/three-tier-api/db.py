@@ -192,7 +192,7 @@ def investigate_ssh_login_failures(incident_id, since, as_of):
 
                 cursor.execute(
                     "WITH source_counts AS ("
-                    " SELECT source_ip::text AS source_ip,"
+                    " SELECT host(source_ip) AS source_ip,"
                     " COUNT(*) AS failed_logins,"
                     " COUNT(DISTINCT username) AS distinct_usernames,"
                     " MIN(observed_at) AS first_seen,"
