@@ -107,34 +107,11 @@
         state: directory
         mode: '0700'
 
-    - name: Install database-backed health API
+    - name: Install shared database-backed health API
       ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../apps/three-tier-api/app.py"
         dest: /opt/aws-three-tier/app.py
         mode: '0644'
-        content: |
-          import os
-          from flask import Flask, jsonify
-          import psycopg2
-
-          app = Flask(__name__)
-
-          @app.get("/health")
-          def health():
-              try:
-                  with psycopg2.connect(
-                      host=os.environ["PGHOST"],
-                      dbname="labdb",
-                      user="labuser",
-                      password=os.environ["PGPASSWORD"],
-                      connect_timeout=3,
-                  ) as conn:
-                      with conn.cursor() as cur:
-                          cur.execute("SELECT 1")
-                          result = cur.fetchone()[0]
-                  return jsonify(status="ok", role="app", db="connected", db_result=result)
-              except Exception:
-                  app.logger.exception("Database health query failed")
-                  return jsonify(status="error", role="app", db="unavailable"), 503
       notify: Restart application
 
     - name: Write private database credentials

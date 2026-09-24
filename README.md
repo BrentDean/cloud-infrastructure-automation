@@ -65,6 +65,19 @@ operator-restricted HTTP rather than public HTTPS.
 The GitHub Actions workflow checks Terraform and Ansible without creating
 billable AWS infrastructure.
 
+## Shared Python application
+
+The same Flask/PostgreSQL health API is now maintained in
+[apps/three-tier-api/](apps/three-tier-api/). The AWS Ansible playbook installs
+that source file rather than embedding Python in YAML. The container image and
+isolated Docker Compose integration test are the foundation for the planned
+k3s Kubernetes project. The legacy AWS `/health` contract is preserved; the
+new `/healthz` (process) and `/readyz` (database) endpoints support distinct
+Kubernetes liveness and readiness checks.
+
+See [application testing and architecture](docs/three-tier-api.md).
+The k3s cluster itself has **not** been deployed or verified yet.
+
 ## Hetzner VPS automation
 
 The repository also contains Ansible automation for an existing Hetzner VPS,
