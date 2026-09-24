@@ -80,17 +80,19 @@ The first Ansible pass configured PostgreSQL and Nginx; [`ansible/k3s/install.ym
 
 ### Visual evidence from the live run
 
+Images are displayed at a consistent preview width; **click any screenshot to inspect the original, full-resolution terminal output**.
+
 **1. Terraform provisions the three AWS tiers.** The initial apply created 28 resources and returned the public web and private application/database addresses.
 
-[![Terraform apply completed with 28 AWS resources created and three-tier outputs](screenshots/aws-three-tier/k3s/01-terraform-apply.png)](screenshots/aws-three-tier/k3s/01-terraform-apply.png)
+<a href="screenshots/aws-three-tier/k3s/01-terraform-apply.png"><img src="screenshots/aws-three-tier/k3s/01-terraform-apply.png" alt="Terraform apply completed with 28 AWS resources created and three-tier outputs" width="850"></a>
 
 **2. Kubernetes runs the database-backed application.** The private k3s node is Ready; both Flask replicas are available; the NodePort Service, test PVC, health endpoints and persistence test pass.
 
-[![Live private AWS k3s cluster: Ready node, 2/2 Flask replicas, NodePort, PVC and passing database checks](screenshots/aws-three-tier/k3s/04-k3s-workloads-and-verification.png)](screenshots/aws-three-tier/k3s/04-k3s-workloads-and-verification.png)
+<a href="screenshots/aws-three-tier/k3s/04-k3s-workloads-and-verification.png"><img src="screenshots/aws-three-tier/k3s/04-k3s-workloads-and-verification.png" alt="Live private AWS k3s cluster: Ready node, 2/2 Flask replicas, NodePort, PVC and passing database checks" width="850"></a>
 
 **3. Automated teardown removes the lab.** Terraform destroys the NAT gateway and remaining networking resources, then reports all 28 resources destroyed.
 
-[![Terraform destroy completed with 28 AWS resources removed](screenshots/aws-three-tier/k3s/07-terraform-destroy-28-resources.png)](screenshots/aws-three-tier/k3s/07-terraform-destroy-28-resources.png)
+<a href="screenshots/aws-three-tier/k3s/07-terraform-destroy-28-resources.png"><img src="screenshots/aws-three-tier/k3s/07-terraform-destroy-28-resources.png" alt="Terraform destroy completed with 28 AWS resources removed" width="850"></a>
 
 [**View all seven live-run screenshots →**](docs/live-verification-2026-09-24.md#screenshots-from-the-live-run) — including Ansible installation, Kubernetes workload creation, configuration idempotency and the negative network security test.
 
