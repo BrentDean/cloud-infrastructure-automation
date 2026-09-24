@@ -1,0 +1,88 @@
+---
+- name: Install single-node k3s on the dedicated disposable VPS
+  hosts: k3s
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+
+    - name: Ensure k3s installation prerequisites are present
+      ansible.builtin.apt:
+        name:
+          - curl
+          - ca-certificates
+          - python3
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: 300
+
+    - name: Create private k3s configuration directory
+      ansible.builtin.file:
+        path: /etc/rancher/k3s
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Write minimal private k3s server configuration
+      ansible.builtin.copy:
+        dest: /etc/rancher/k3s/config.yaml
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          write-kubeconfig-mode: "0600"
+          secrets-encryption: true
+          disable:
+            - traefik
+            - servicelb
+      notify: Restart k3s
+
+    - name: Check for an installed k3s binary
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s
+      register: installed_k3s
+
+    - name: Download official k3s installer for first installation
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /usr/local/src/install-k3s.sh
+        owner: root
+        group: root
+        mode: "0700"
+      when: not installed_k3s.stat.exists
+
+    - name: Install k3s exactly once
+      ansible.builtin.command: /bin/sh /usr/local/src/install-k3s.sh
+      environment:
+        INSTALL_K3S_EXEC: server
+        INSTALL_K3S_CHANNEL: stable
+        INSTALL_K3S_VERSION: "{{ lookup('env', 'K3S_VERSION') }}"
+      when: not installed_k3s.stat.exists
+
+    - name: Start k3s
+      ansible.builtin.systemd_service:
+        name: k3s
+        enabled: true
+        state: started
+
+    - name: Apply configuration changes before checking readiness
+      ansible.builtin.meta: flush_handlers
+
+    - name: Require a functioning Kubernetes API and registered node
+      ansible.builtin.command: k3s kubectl get nodes -o name
+      register: kubernetes_nodes
+      changed_when: false
+      retries: 36
+      delay: 5
+      until: kubernetes_nodes.rc == 0 and 'node/' in kubernetes_nodes.stdout
+
+  handlers:
+    - name: Restart k3s
+      ansible.builtin.systemd_service:
+        name: k3s
+        state: restarted
