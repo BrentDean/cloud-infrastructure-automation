@@ -23,7 +23,7 @@ docker compose -f "$COMPOSE" up -d --build
 wait_for_ready() {
   local attempt
   for ((attempt=1; attempt<=60; attempt++)); do
-    if curl -fsS --max-time 3 "$BASE_URL/readyz" |
+    if curl -fsS --max-time 3 "$BASE_URL/readyz" 2>/dev/null |
         python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["status"]=="ok" and data["db_result"]==1' >/dev/null 2>&1; then
       return 0
     fi
@@ -38,7 +38,10 @@ wait_for_ready
 curl -fsS --max-time 5 "$BASE_URL/health" |
   python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["status"]=="ok" and data["db_result"]==1'
 
-docker compose -f "$COMPOSE" stop postgres
+# Pause PostgreSQL to model an outage without removing its Compose DNS alias.
+# GitHub-hosted Docker runners can retain a stale negative DNS cache after
+# stop/start, making recovery fail for a network reason rather than a DB fault.
+docker compose -f "$COMPOSE" pause postgres
 
 curl -fsS --max-time 5 "$BASE_URL/healthz" |
   python3 -c 'import json,sys; assert json.load(sys.stdin)["status"]=="ok"'
@@ -49,6 +52,6 @@ if [[ "$status" != 503 ]]; then
   exit 1
 fi
 
-docker compose -f "$COMPOSE" start postgres
+docker compose -f "$COMPOSE" unpause postgres
 wait_for_ready
 echo 'PASS: legacy health, liveness, readiness, DB outage, and DB recovery'

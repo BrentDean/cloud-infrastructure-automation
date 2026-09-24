@@ -43,8 +43,10 @@ bash scripts/test-three-tier-api-container.sh
 
 The integration script builds the API, creates a uniquely named Compose
 project and ephemeral database, binds the API only on localhost:18080 by
-default, checks both endpoints, stops PostgreSQL, asserts liveness remains
-healthy while readiness fails, then restarts PostgreSQL and verifies recovery.
+default, checks both endpoints, pauses PostgreSQL, asserts liveness remains
+healthy while readiness fails, then unpauses PostgreSQL and verifies recovery.
+Pausing retains the database container network identity and isolates the
+application/database failure behavior from Docker DNS alias churn.
 Use `API_TEST_PORT` to choose another free local port. Cleanup destroys
 **only that uniquely named test Compose project and its test volume**.
 
