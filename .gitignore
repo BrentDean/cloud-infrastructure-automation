@@ -31,3 +31,6 @@ brent-admin_credentials.csv
 
 # Local scratch work (repository root)
 /scratch/
+
+# Synthetic browser screenshot artifacts from CI/local Playwright
+/artifacts/dashboard/

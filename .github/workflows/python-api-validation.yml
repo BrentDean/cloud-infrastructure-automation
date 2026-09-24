@@ -24,5 +24,21 @@ jobs:
         run: python -m pytest -q tests
       - name: Validate shell script
         run: bash -n scripts/test-three-tier-api-container.sh
-      - name: Isolated Docker Compose integration test
+      - name: Validate dashboard JavaScript syntax
+        run: node --check apps/three-tier-api/static/labops/dashboard.js
+      - name: Install Chromium for real browser UI tests
+        run: |
+          python -m pip install 'playwright>=1.55,<2'
+          python -m playwright install --with-deps chromium
+      - name: Isolated Docker Compose and Chromium dashboard integration test
+        env:
+          LABOPS_BROWSER_TEST: '1'
         run: bash scripts/test-three-tier-api-container.sh
+      - name: Upload synthetic dashboard screenshot evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: labops-browser-preview
+          path: artifacts/dashboard/*.png
+          if-no-files-found: ignore
+          retention-days: 14

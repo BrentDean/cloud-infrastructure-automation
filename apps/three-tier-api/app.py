@@ -6,7 +6,7 @@ from ipaddress import ip_address
 from uuid import UUID
 
 import psycopg2
-from flask import Flask, jsonify, request, url_for
+from flask import Flask, jsonify, render_template, request, url_for
 
 import db
 
@@ -16,6 +16,23 @@ app.config["MAX_CONTENT_LENGTH"] = 16 * 1024
 SEVERITIES = {"low", "medium", "high", "critical"}
 COWRIE_EVENT = "cowrie.login.failed"
 STATUSES = {"open", "investigating", "resolved"}
+
+
+@app.get("/dashboard")
+def dashboard():
+    """Same-origin operator console; renders even when PostgreSQL is down."""
+    response = app.make_response(render_template("dashboard.html"))
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; script-src 'self'; style-src 'self'; "
+        "img-src 'self' data:; connect-src 'self'; "
+        "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    )
+    return response
+
 
 
 def _database_ping():
