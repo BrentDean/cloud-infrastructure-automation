@@ -1,9 +1,9 @@
 # LabOps: persistent security incident workflow (first application milestone)
 
 LabOps is the application built **on** the disposable AWS three-tier lab. It
-does not modify LaunchShell, TorKit, or any Hetzner staging service. This first
-milestone is an incident-management foundation for future security-event ingestion
-and controlled SOAR playbooks; it is **not yet a complete SOAR system**.
+does not modify LaunchShell, TorKit, or any Hetzner staging service. The incident-management and sanitized synthetic Cowrie event-ingestion milestones
+form the basis for future controlled SOAR playbooks; **no automation or
+security response is executed yet**.
 
 ## Application contract
 
@@ -81,3 +81,52 @@ runtime evidence is claimed by this change.
 Later bounded milestones: security-event ingest/deduplication, incident-event
 relationships, read-only investigation playbook, audited execution history,
 authenticated approvals, and carefully constrained response integrations.
+
+
+## Security event ingestion: bounded Cowrie failed-login adapter (PR #4)
+
+An operator first creates an incident with POST /api/v1/incidents. The caller
+then explicitly attaches synthetic, sanitized Cowrie authentication failures:
+
+~~~http
+POST /api/v1/incidents/{incident_uuid}/events
+Content-Type: application/json
+
+{
+  "source": "cowrie",
+  "event_type": "cowrie.login.failed",
+  "source_event_id": "synthetic-run-1-attempt-001",
+  "source_ip": "198.51.100.23",
+  "username": "root",
+  "observed_at": "2026-09-24T12:00:00Z"
+}
+~~~
+
+Only this event type is accepted. The source_event_id is a **stable unique
+per-occurrence ID assigned by a future importer**, not Cowrie's eventid
+(which is an event type like cowrie.login.failed). source_ip must be valid
+IPv4 or IPv6; observed_at must include a timezone. JSON keys are allowlisted;
+no raw JSON captures, passwords, passwords attempted, hostnames, or commands
+are accepted or stored. Use documentation-reserved IP addresses and test
+usernames, not live source telemetry, in this HTTP-only lab.
+
+POST returns 201 for a new event, 200 for an exact idempotent replay, 409
+if the same (source, source_event_id) refers to different content or a different
+incident, 404 if the incident does not exist, 400/415 for invalid requests and
+503 for PostgreSQL failure. A database UNIQUE constraint, transaction, and
+ON CONFLICT DO NOTHING prevent duplicate rows across Gunicorn workers or Pods.
+GET /api/v1/incidents/{incident_uuid}/events?limit=20 lists recent associated
+events (limit 1–100), returning 404 for a nonexistent incident.
+
+The second versioned SQL migration is
+apps/three-tier-api/migrations/0002_security_events.sql. It adds a foreign
+key to incidents, an INET source address, a global per-source event ID
+uniqueness constraint, and an incident/time index. Ansible installs it only
+after the incident schema on the existing dedicated database EC2. The local
+Docker integration test runs both migrations twice before starting Flask.
+
+**Operational boundary:** This is manual, explicitly incident-linked
+ingestion. It does not fetch from T-Pot, auto-correlate incidents, enrich IPs,
+execute playbooks, call AWS, or change firewalls. Those are separately scoped
+and will require authorization, authentication and TLS before exposing a
+sensitive or remotely accessible ingestion interface.

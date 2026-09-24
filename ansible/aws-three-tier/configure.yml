@@ -112,6 +112,43 @@
           - /usr/local/share/aws-three-tier/0001_incidents.sql
       when: incident_schema.stdout | trim != 'incidents'
 
+    - name: Install LabOps security events schema migration
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../apps/three-tier-api/migrations/0002_security_events.sql"
+        dest: /usr/local/share/aws-three-tier/0002_security_events.sql
+        mode: '0644'
+
+    - name: Check whether LabOps security events schema already exists
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -d
+          - labdb
+          - -tAc
+          - "SELECT to_regclass('public.security_events')"
+      register: security_events_schema
+      changed_when: false
+
+    - name: Apply LabOps security events migration exactly once
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -v
+          - ON_ERROR_STOP=1
+          - -d
+          - labdb
+          - -f
+          - /usr/local/share/aws-three-tier/0002_security_events.sql
+      when: security_events_schema.stdout | trim != 'security_events'
+
   handlers:
     - name: Restart PostgreSQL
       ansible.builtin.systemd_service:

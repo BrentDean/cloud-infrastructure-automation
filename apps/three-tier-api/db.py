@@ -77,3 +77,98 @@ def update_incident(incident_id, status, notes):
                     (status, notes, incident_id),
                 )
                 return _record(cursor.fetchone())
+
+
+EVENT_FIELDS = (
+    "id, incident_id, source, source_event_id, event_type, source_ip, "
+    "username, observed_at, ingested_at"
+)
+
+
+class IncidentNotFound(Exception):
+    """The caller supplied a valid UUID with no corresponding incident."""
+
+
+class EventConflict(Exception):
+    """The producer reused an idempotency key for a different event."""
+
+
+def _event_record(row):
+    if row is None:
+        return None
+    result = dict(row)
+    result["id"] = str(result["id"])
+    result["incident_id"] = str(result["incident_id"])
+    result["source_ip"] = str(result["source_ip"])
+    result["observed_at"] = result["observed_at"].isoformat()
+    result["ingested_at"] = result["ingested_at"].isoformat()
+    return result
+
+
+def ingest_cowrie_event(incident_id, source_event_id, source_ip, username, observed_at):
+    """Atomic insert / replay detection shared across Flask workers and Pods.
+
+    One source_event_id refers to one immutable event; exact replay is safe,
+    but reusing a key for another event is a conflict.
+    """
+    with closing(_connect()) as connection:
+        with connection:
+            with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(
+                    "SELECT 1 FROM incidents WHERE id = %s::uuid",
+                    (incident_id,),
+                )
+                if cursor.fetchone() is None:
+                    raise IncidentNotFound()
+
+                cursor.execute(
+                    "INSERT INTO security_events "
+                    "(id, incident_id, source, source_event_id, event_type, "
+                    "source_ip, username, observed_at) "
+                    "VALUES (%s::uuid, %s::uuid, 'cowrie', %s, "
+                    "'cowrie.login.failed', %s::inet, %s, %s) "
+                    "ON CONFLICT (source, source_event_id) DO NOTHING "
+                    "RETURNING " + EVENT_FIELDS,
+                    (str(uuid4()), incident_id, source_event_id,
+                     source_ip, username, observed_at),
+                )
+                inserted = cursor.fetchone()
+                if inserted is not None:
+                    return _event_record(inserted), True
+
+                # After ON CONFLICT waits for a concurrent INSERT to finish,
+                # READ COMMITTED sees that committed row on the next statement.
+                cursor.execute(
+                    "SELECT " + EVENT_FIELDS + " FROM security_events "
+                    "WHERE source = 'cowrie' AND source_event_id = %s",
+                    (source_event_id,),
+                )
+                existing = _event_record(cursor.fetchone())
+                if existing is None:
+                    raise RuntimeError("Idempotency conflict row was not found")
+                if (existing["incident_id"] != incident_id
+                        or existing["source_ip"] != source_ip
+                        or existing["username"] != username
+                        or existing["observed_at"] != observed_at.isoformat()
+                        or existing["event_type"] != "cowrie.login.failed"):
+                    raise EventConflict()
+                return existing, False
+
+
+def list_incident_events(incident_id, limit):
+    with closing(_connect()) as connection:
+        with connection:
+            with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(
+                    "SELECT 1 FROM incidents WHERE id = %s::uuid",
+                    (incident_id,),
+                )
+                if cursor.fetchone() is None:
+                    raise IncidentNotFound()
+                cursor.execute(
+                    "SELECT " + EVENT_FIELDS + " FROM security_events "
+                    "WHERE incident_id = %s::uuid "
+                    "ORDER BY observed_at DESC, id DESC LIMIT %s",
+                    (incident_id, limit),
+                )
+                return [_event_record(row) for row in cursor.fetchall()]

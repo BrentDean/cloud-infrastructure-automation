@@ -1,6 +1,8 @@
 """Shared Flask API: health contracts and the first persistent LabOps incident workflow."""
 
 import os
+from datetime import datetime, timezone
+from ipaddress import ip_address
 from uuid import UUID
 
 import psycopg2
@@ -12,6 +14,7 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024
 
 SEVERITIES = {"low", "medium", "high", "critical"}
+COWRIE_EVENT = "cowrie.login.failed"
 STATUSES = {"open", "investigating", "resolved"}
 
 
@@ -124,11 +127,11 @@ def create_incident():
 
 @app.get("/api/v1/incidents")
 def list_incidents():
-    raw = request.args.get("limit", "20")
-    if not raw.isascii() or not raw.isdecimal() or len(raw) > 3 or not 1 <= int(raw) <= 100:
+    limit = _limit()
+    if limit is None:
         return _error("validation_error", "limit must be an integer from 1 to 100", 400)
     try:
-        incidents = db.list_incidents(int(raw))
+        incidents = db.list_incidents(limit)
     except psycopg2.Error:
         return _db_error()
     return jsonify(incidents=incidents)
@@ -172,3 +175,71 @@ def update_incident(incident_id):
     if incident is None:
         return _error("not_found", "Incident not found", 404)
     return jsonify(incident=incident)
+
+
+def _limit():
+    """A bounded page size for incident and event collections."""
+    raw = request.args.get("limit", "20")
+    if not raw.isascii() or not raw.isdecimal() or len(raw) > 3 or not 1 <= int(raw) <= 100:
+        return None
+    return int(raw)
+
+
+@app.post("/api/v1/incidents/<incident_id>/events")
+def ingest_incident_event(incident_id):
+    """Attach one sanitized Cowrie login failure to an explicit incident.
+
+    Idempotency uses a stable importer-assigned source_event_id. Cowrie's
+    eventid identifies event type, NOT an individual event occurrence.
+    """
+    identifier = _incident_id(incident_id)
+    if identifier is None:
+        return _error("validation_error", "Invalid incident UUID", 400)
+    payload, error = _body({
+        "source", "event_type", "source_event_id", "source_ip",
+        "username", "observed_at",
+    })
+    if error is not None:
+        return error
+    try:
+        if payload.get("source") != "cowrie" or payload.get("event_type") != COWRIE_EVENT:
+            raise ValueError("Only cowrie.login.failed events from cowrie are supported")
+        external_id = _text(payload, "source_event_id", 128)
+        username = _text(payload, "username", 128)
+        source_ip = str(ip_address(_text(payload, "source_ip", 45)))
+        timestamp = _text(payload, "observed_at", 40)
+        observed_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("observed_at must include a timezone")
+        observed_at = observed_at.astimezone(timezone.utc)
+    except ValueError as exc:
+        return _error("validation_error", str(exc), 400)
+
+    try:
+        event, created = db.ingest_cowrie_event(
+            identifier, external_id, source_ip, username, observed_at
+        )
+    except db.IncidentNotFound:
+        return _error("not_found", "Incident not found", 404)
+    except db.EventConflict:
+        return _error("event_conflict", "Source event ID has different content or incident", 409)
+    except psycopg2.Error:
+        return _db_error()
+    return jsonify(event=event), 201 if created else 200
+
+
+@app.get("/api/v1/incidents/<incident_id>/events")
+def list_incident_events(incident_id):
+    identifier = _incident_id(incident_id)
+    if identifier is None:
+        return _error("validation_error", "Invalid incident UUID", 400)
+    limit = _limit()
+    if limit is None:
+        return _error("validation_error", "limit must be an integer from 1 to 100", 400)
+    try:
+        events = db.list_incident_events(identifier, limit)
+    except db.IncidentNotFound:
+        return _error("not_found", "Incident not found", 404)
+    except psycopg2.Error:
+        return _db_error()
+    return jsonify(events=events)
