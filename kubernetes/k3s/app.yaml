@@ -6,13 +6,14 @@ metadata:
   labels:
     app: three-tier-api
 spec:
-  type: ClusterIP
+  type: NodePort
   selector:
     app: three-tier-api
   ports:
     - name: http
       port: 80
       targetPort: 8000
+      nodePort: 30080
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -50,7 +51,10 @@ spec:
               containerPort: 8000
           env:
             - name: PGHOST
-              value: postgres
+              valueFrom:
+                configMapKeyRef:
+                  name: db-endpoint
+                  key: host
             - name: PGDATABASE
               value: labdb
             - name: PGUSER

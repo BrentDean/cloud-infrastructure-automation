@@ -1,4 +1,4 @@
-"""Offline shape and safety checks; no kubeconfig, cluster, or cloud access required."""
+"""Offline checks for AWS three-tier k3s workload contracts; no cloud access."""
 
 from pathlib import Path
 
@@ -16,37 +16,21 @@ for path in sorted((ROOT / "kubernetes" / "k3s").glob("*.yaml")):
 
 assert set(DOCS) == {
     ("Namespace", "infra-lab"),
-    ("Service", "postgres"),
-    ("Service", "postgres-headless"),
-    ("NetworkPolicy", "postgres-app-only"),
-    ("StatefulSet", "postgres"),
     ("Service", "three-tier-api"),
     ("Deployment", "three-tier-api"),
-}, f"Unexpected Kubernetes resources: {set(DOCS)}"
+    ("PersistentVolumeClaim", "lab-evidence"),
+    ("Pod", "pvc-evidence"),
+}, f"Unexpected or missing Kubernetes resources: {set(DOCS)}"
 
 for (kind, name), obj in DOCS.items():
     if kind != "Namespace":
         assert obj["metadata"]["namespace"] == "infra-lab", (kind, name)
-    if kind == "Service":
-        assert obj["spec"]["type"] == "ClusterIP"
-        assert "nodePort" not in str(obj), name
 
-db = DOCS[("StatefulSet", "postgres")]["spec"]
-claim = db["volumeClaimTemplates"][0]
-assert claim["metadata"]["name"] == "postgres-data"
-assert claim["spec"]["storageClassName"] == "local-path"
-assert claim["spec"]["resources"]["requests"]["storage"] == "4Gi"
-assert db["replicas"] == 1
-assert db["serviceName"] == "postgres-headless"
-assert DOCS[("Service", "postgres-headless")]["spec"]["clusterIP"] == "None"
-policy = DOCS[("NetworkPolicy", "postgres-app-only")]["spec"]
-assert policy["podSelector"]["matchLabels"] == {"app": "postgres"}
-assert policy["policyTypes"] == ["Ingress"]
-assert policy["ingress"][0]["from"][0]["podSelector"]["matchLabels"] == {"app": "three-tier-api"}
-assert policy["ingress"][0]["ports"][0]["port"] == 5432
-db_container = db["template"]["spec"]["containers"][0]
-db_password = next(x for x in db_container["env"] if x["name"] == "POSTGRES_PASSWORD")
-assert db_password["valueFrom"]["secretKeyRef"] == {"name": "db-auth", "key": "password"}
+service = DOCS[("Service", "three-tier-api")]["spec"]
+assert service["type"] == "NodePort"
+assert service["ports"][0]["nodePort"] == 30080
+assert service["ports"][0]["targetPort"] == 8000
+assert service["selector"] == {"app": "three-tier-api"}
 
 app = DOCS[("Deployment", "three-tier-api")]["spec"]
 assert app["replicas"] == 2
@@ -55,14 +39,32 @@ template = app["template"]["spec"]
 assert template["securityContext"]["runAsNonRoot"]
 container = template["containers"][0]
 assert container["imagePullPolicy"] == "Never"
-assert container["image"].startswith("localhost/three-tier-api:")
+assert container["image"] == "localhost/three-tier-api:pr2"
 assert container["securityContext"]["readOnlyRootFilesystem"]
 assert not container["securityContext"]["allowPrivilegeEscalation"]
 assert container["livenessProbe"]["httpGet"]["path"] == "/healthz"
 assert container["startupProbe"]["httpGet"]["path"] == "/healthz"
 assert container["readinessProbe"]["httpGet"]["path"] == "/readyz"
-app_password = next(x for x in container["env"] if x["name"] == "PGPASSWORD")
-assert app_password["valueFrom"]["secretKeyRef"] == {"name": "db-auth", "key": "password"}
-assert not any(kind == "Secret" for kind, _ in DOCS), "Never commit database credentials"
+environment = {entry["name"]: entry for entry in container["env"]}
+assert environment["PGHOST"]["valueFrom"]["configMapKeyRef"] == {
+    "name": "db-endpoint", "key": "host"
+}
+assert environment["PGPASSWORD"]["valueFrom"]["secretKeyRef"] == {
+    "name": "db-auth", "key": "password"
+}
+assert environment["PGDATABASE"]["value"] == "labdb"
+assert environment["PGUSER"]["value"] == "labuser"
 
-print("PASS: isolated ClusterIP Services, PostgreSQL PVC, probes, non-root API, runtime Secret references")
+claim = DOCS[("PersistentVolumeClaim", "lab-evidence")]["spec"]
+assert claim["storageClassName"] == "local-path"
+assert claim["resources"]["requests"]["storage"] == "1Gi"
+assert claim["accessModes"] == ["ReadWriteOnce"]
+pod = DOCS[("Pod", "pvc-evidence")]["spec"]
+assert pod["volumes"][0]["persistentVolumeClaim"]["claimName"] == "lab-evidence"
+assert pod["containers"][0]["volumeMounts"][0]["mountPath"] == "/data"
+
+assert not any(kind in {"StatefulSet", "Secret", "ConfigMap"} for kind, _ in DOCS), (
+    "PostgreSQL stays on EC2 #3; secrets and private DB IP are runtime-only"
+)
+
+print("PASS: private-tier NodePort, independent DB ConfigMap, non-root API, probes, runtime Secret, local-path PVC")

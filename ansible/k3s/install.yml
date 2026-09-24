@@ -1,6 +1,6 @@
 ---
-- name: Install single-node k3s on the dedicated disposable VPS
-  hosts: k3s
+- name: Install single-node k3s on the private AWS application EC2 instance
+  hosts: app
   become: true
   gather_facts: false
 
