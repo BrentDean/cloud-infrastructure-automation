@@ -83,7 +83,6 @@
       ["investigating", list.filter((item) => item.status === "investigating").length],
       ["resolved", list.filter((item) => item.status === "resolved").length],
     ]) byId("count-" + name).textContent = count.toLocaleString();
-    byId("incident-list-count").textContent = String(list.length);
   }
 
   function renderList() {
@@ -96,6 +95,7 @@
         shortId(incident.id).toLowerCase().includes(query))
     );
 
+    byId("incident-list-count").textContent = String(items.length);
     const container = byId("incident-list");
     container.replaceChildren();
     const fragment = document.createDocumentFragment();
