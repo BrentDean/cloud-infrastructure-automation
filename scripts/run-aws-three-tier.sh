@@ -87,12 +87,13 @@ RUN_ID="lab-$(basename "$WORK" | cut -d . -f 2 | tr '[:upper:]' '[:lower:]')"
 EXPIRES_AT="$(date -u -d '+4 hours' '+%Y-%m-%dT%H:%M:%SZ')"
 ssh-keygen -q -t ed25519 -N '' -C "aws-three-tier-$RUN_ID" -f "$WORK/id_ed25519"
 
-python3 - "$WORK/terraform/lab.auto.tfvars.json" "$RUN_ID" "$EXPIRES_AT" "$ALLOWED_CIDR" "$AWS_REGION" "$WORK/id_ed25519.pub" <<'PY'
+python3 - "$WORK/terraform/lab.auto.tfvars.json" "$RUN_ID" "$EXPIRES_AT" "$ALLOWED_CIDR" "$AWS_REGION" "$WORK/id_ed25519.pub" "$LAB_APP_RUNTIME" <<'PY'
 import json, pathlib, sys
-p, run_id, expires, cidr, region, pub = sys.argv[1:]
+p, run_id, expires, cidr, region, pub, app_runtime = sys.argv[1:]
 pathlib.Path(p).write_text(json.dumps({
     'run_id': run_id, 'expires_at': expires, 'allowed_cidr': cidr,
     'aws_region': region, 'ssh_public_key': pathlib.Path(pub).read_text().strip(),
+    'app_runtime': app_runtime,
 }, indent=2) + '\n')
 PY
 

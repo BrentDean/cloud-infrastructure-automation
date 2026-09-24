@@ -1,184 +1,185 @@
-# Isolated Hetzner k3s Kubernetes lab — operator runbook
+# AWS three-tier infrastructure — optional private k3s application runtime
 
-**State: code implemented; a live cloud node and successful remote Kubernetes
-run have not yet been independently verified.** GitHub Actions runs offline
-Terraform, Ansible, YAML and shell validation; it does not deploy a server.
+**Implementation status:** opt-in Terraform, Ansible, Kubernetes manifests,
+operator scripts and CI static checks are committed to PR #2. The Kubernetes
+variant has **not yet been deployed and verified on a live AWS VPC**.
+The original systemd/Gunicorn three-tier lab was separately verified in
+September 2026; that historical result is not proof of the k3s variant.
 
-## Scope and architecture
+## Architecture
 
-The existing staging VPS and TorKit, its onion identities, its backup job,
-and the previously tested AWS three-tier lab are not touched. This is a
-separate Terraform root module, Hetzner server named `k3s-lab-*`, Hetzner
-cloud firewall, cloud-init operator, Ansible k3s setup and Kubernetes
-namespace `infra-lab`.
+Use the original `terraform/aws-three-tier` root and
+`scripts/run-aws-three-tier.sh`, not a fourth VM or a second provider.
+The default `LAB_APP_RUNTIME=systemd` preserves the existing application
+delivery. Set `LAB_APP_RUNTIME=k3s` to switch *only* the private application
+tier; the original PostgreSQL database and Nginx bastion tiers remain intact.
 
 ```text
-Workstation                 Dedicated Hetzner VM (single node)
-  | SSH :22 only                k3s API :6443 localhost / not exposed by firewall
-  v
-labops -> sudo k3s kubectl -> infra-lab namespace
-                                 |
-               ClusterIP :80 -> Flask Deployment x2
-                                 | /readyz checks SELECT 1
-                                 v
-               ClusterIP :5432 -> PostgreSQL StatefulSet x1
-                          (headless governing Service)
-                                 |
-                         local-path PVC: 4Gi
+Workstation /32 -> web EC2 (public subnet)
+                    Nginx /health + SSH bastion
+                         |
+                    TCP 30080, web SG only
+                         v
+                    app EC2 (private subnet; t3.medium default)
+                    k3s NodePort 30080 -> Flask Service
+                                             |
+                                Flask Deployment, 2 non-root Pods
+                                liveness /healthz, readiness /readyz
+                                             |
+                            PostgreSQL TCP 5432, app SG only
+                                             v
+                    db EC2 (private subnet): PostgreSQL 16
+                    encrypted gp3 root EBS 12 GiB
 ```
 
-Cloud firewall permits inbound TCP/22 from the operator IPv4 /32 only.
-Remote Kubernetes :6443, HTTP :80/:443 and PostgreSQL :5432 are not
-exposed by the firewall. The k3s packaged Traefik and ServiceLB are disabled.
-Application and client-facing database Services are ClusterIP; an additional
-headless Service governs the PostgreSQL StatefulSet DNS identity. A
-NetworkPolicy permits inbound database traffic from API Pods on TCP/5432
-and denies inbound PostgreSQL traffic from other Pods. Use SSH + kubectl
-or a localhost-only
-SSH/kubectl port-forward for interaction.
+The original mode still proxies web -> app:8000 with systemd Gunicorn.
+In k3s mode the AWS security-group rule changes to port 30080; Ansible
+configures Nginx and the smoke test to use that same port, and skips only
+the systemd application play. DB-to-app access remains security-group
+restricted, and the web tier cannot connect directly to PostgreSQL.
 
-k3s local-path provisioning persists PostgreSQL data independently of a
-*pod*, but remains on **the same VM's disk**: it does NOT survive deletion
-of the Hetzner server and is NOT offsite disaster recovery. This project
-is single-node, not a high-availability production design. PostgreSQL is
-one replica, and app replicas cannot withstand losing the only node.
-Do not delete/recreate the PVC when conducting the pod-restart exercise.
+The k3s Kubernetes API (6443), NodePort (30080), pod network, and
+PostgreSQL are not exposed to the workstation or Internet through AWS
+security-group ingress. Port 80 and SSH on web are restricted to the
+operator's public IPv4 /32. An SSH config in the private temporary run
+directory reaches the app via the existing bastion; no additional
+jumpbox, ELB, EKS cluster, public container registry, or extra EC2
+instance is required.
 
-## 1. Preconditions and cloud cost approval
+**Persistence distinctions:** PostgreSQL data resides on the dedicated
+DB EC2's encrypted gp3 root EBS, with `delete_on_termination=true`;
+destroying the full lab removes that data. The additional 1 GiB
+Kubernetes local-path PVC is intentionally **only a non-production test
+volume**. Its marker persists across deletion/replacement of its Pod,
+but not across deletion of the EC2 app instance. Neither volume is an
+off-instance disaster-recovery backup. Independent DB backups and measured
+restore are planned for Project 3.
 
-Run on your Linux workstation from the repository root. Requirements:
-Terraform, Ansible, Docker, SSH, Python 3, a Hetzner Cloud project/token
-and a public/private SSH key pair. Keep real tokens, SSH private keys,
-`terraform.tfvars`, `terraform.tfstate`, and DB passwords OUT of Git.
+## Prerequisites and cost controls
 
-Review current Hetzner pricing, available server types, quotas and SSH
-public key registrations before `terraform apply`. A running VM and
-storage accrue cost even when idle. This lab does not automatically
-terminate itself. No cloud actions are performed by checking out a PR
-or running the static validation workflows.
+Requires existing configured, non-root AWS CLI credentials, AWS account
+permission/quota to create the original VPC/EC2/NAT/EIP resources,
+Terraform, Ansible, Python 3, SSH, and a running local Docker daemon.
+Ansible defaults to `~/.local/bin/ansible-playbook`; set
+`ANSIBLE_PLAYBOOK` if installed elsewhere. The original script generates
+a fresh SSH key, restricts access to the current public /32, creates
+an isolated private Terraform state, generates a new ephemeral database
+password, and attempts destruction in its EXIT trap.
+
+AWS resources cost money during the run, especially the NAT gateway,
+EIP, three EC2 instances and EBS volumes. The app instance defaults to
+`t3.medium` (two vCPU/four GiB), while web and DB remain `t3.small`
+unless overridden. Default local hold time is zero; `LAB_HOLD_MINUTES`
+may be 0–180. No GitHub Actions workflow provisions cloud resources.
+Review EC2/NAT pricing, quotas and AWS Budget notifications separately:
+budget alerts are not a hard spending cap.
+
+An unsuccessful `terraform destroy` is not silent: the original runner
+prints its private recovery directory and the
+`scripts/destroy-aws-three-tier.sh` recovery command. Independently
+check AWS resources and billing after each run. Do not delete the private
+state directory while any AWS lab resource still exists.
+
+## Launch and verify (explicitly billable)
+
+On your workstation, after reviewing draft PR #2:
 
 ```bash
 cd /mnt/hyperV/projects/vps-infrastructure
 git switch feature/kubernetes-k3s-deployment
 
-cp terraform/hetzner-k3s/terraform.tfvars.example \
-   terraform/hetzner-k3s/terraform.tfvars
+# Confirm your intended AWS CLI profile, not an account root identity.
+AWS_PROFILE=vps-lab aws sts get-caller-identity
 
-# EDIT terraform.tfvars: replace 203.0.113.10/32 with YOUR public IPv4 /32,
-# set the matching SSH .pub file and confirm VM type/location.
-# Use existing_ssh_key_id if this exact key is already in Hetzner Cloud.
-export HCLOUD_TOKEN='YOUR_PRIVATE_HETZNER_PROJECT_API_TOKEN'
-terraform -chdir=terraform/hetzner-k3s init
-terraform -chdir=terraform/hetzner-k3s fmt -check
-terraform -chdir=terraform/hetzner-k3s validate
-terraform -chdir=terraform/hetzner-k3s plan -out=k3s.tfplan
+# Check Docker access before any cloud provisioning:
+docker info >/dev/null
+
+# One command performs Terraform provision -> Ansible -> k3s ->
+# Kubernetes Service/DB/PVC checks -> negative network smoke ->
+# external /health verification -> Terraform destroy.
+AWS_PROFILE=vps-lab LAB_APP_RUNTIME=k3s \
+  bash scripts/run-aws-three-tier.sh --run
 ```
 
-Check plan: **one new, separate** `k3s-lab-*` server and firewall, plus
-a new operator SSH key unless `existing_ssh_key_id` was supplied.
-Any plan deleting or modifying a staging VPS is wrong: STOP. If your
-public IP changes, update `operator_cidr` and apply the new firewall
-rule to regain SSH access. The /32 deliberately does not allow everyone.
+If your local Ansible is elsewhere, set
+`ANSIBLE_PLAYBOOK=/absolute/path/to/ansible-playbook`.
+Run the script from a terminal you will not close prematurely;
+Ctrl-C also attempts Terraform destroy. The runner prints the
+private run directory and retains evidence there. Examples:
 
-The Hetzner token may be present in shell history if set using an inline
-literal. Prefer a secret manager or a shell session without history.
-
-## 2. Explicit provision and deploy (billable)
-
-```bash
-terraform -chdir=terraform/hetzner-k3s apply k3s.tfplan
-
-# Choose the private counterpart to the .pub file in terraform.tfvars.
-export SSH_KEY="$HOME/.ssh/id_ed25519"
-
-# Keep this same database password for future deployments to the SAME
-# persistent volume; changing the Secret alone does not rotate a DB role.
-export LAB_DB_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-
-bash scripts/k3s/deploy.sh
+```text
+$HOME/.local/state/vps-infrastructure/aws-three-tier/run.XXXXXXXX/
+  evidence/
+    configure-first.log
+    configure-second.log
+    k3s-ansible.log
+    k3s-deploy.log
+    k3s-verification.log
+    smoke-test.log
+    external-health.json
+    run-summary.txt
 ```
 
-The script gates on Terraform's `server_name` output beginning with
-`k3s-lab-`, waits for SSH, runs Ansible, builds the *same* Flask source
-used by AWS, and imports the local Docker image into k3s containerd
-namespace `k8s.io`. No registry credentials or public GHCR repository
-are required. The Kubernetes image is `localhost/three-tier-api:pr2`
-with `imagePullPolicy: Never`, so the container cannot quietly pull a
-different image from a public registry. A manual rollout restart makes
-an imported replacement image take effect on repeat deployments.
+During the run it builds the **same Flask source** used by the systemd
+variant with `docker build --platform linux/amd64`, imports the image
+through the SSH bastion to private k3s containerd, and deploys
+`localhost/three-tier-api:pr2` with `imagePullPolicy: Never`.
+PostgreSQL remains installed through the existing AWS DB playbook.
+Kubernetes gets DB private IP through a runtime ConfigMap and password
+through a runtime Secret, not a committed manifest or Terraform state.
+Secrets encryption at rest is enabled for the single-node k3s datastore.
 
-Before applying the app, the script applies the namespace, creates
-the `db-auth` Secret from standard input (no plaintext secret manifest),
-applies PostgreSQL, and waits for its rollout. Password encryption at
-rest is enabled in k3s config. Docker build occurs on the workstation;
-no Docker daemon is installed on the VM. The deployment script does
-not run `terraform apply` or `destroy`.
+Verification asserts two available Flask Pods, a non-root process,
+Cluster Service DNS, `/healthz`, `/readyz`, and the legacy `/health`
+with a real `SELECT 1` from the dedicated DB EC2 instance. The
+web host can reach the app NodePort but not the DB port directly;
+external operator-/32 Nginx -> k3s -> DB health JSON is also saved.
 
-If you lose the password after the first deployment, keep in mind the
-existing PostgreSQL role still has the old password in its data volume.
-Do not overwrite the Secret with a different value and expect it to
-work without separately rotating the PostgreSQL role. This will be
-addressed more fully in the disaster-recovery milestone.
+The Kubernetes PVC smoke test writes a run marker, deletes **only**
+the dedicated non-production `pvc-evidence` Pod (not the PVC), recreates
+that Pod, and verifies the marker survived. It is explicitly a
+Pod-lifecycle test, not full EC2 or region disaster recovery.
 
-## 3. Verify actual workload, network and storage
-
-```bash
-bash scripts/k3s/verify.sh
-```
-
-Verification must show a Ready node, running PostgreSQL StatefulSet,
-2/2 available API replicas, `local-path` storage class, PVC
-`postgres-data-postgres-0` in `Bound` phase, and successful
-`/healthz`, `/readyz`, and legacy `/health` requests through the API
-ClusterIP Service DNS. `/readyz` and `/health` must return PostgreSQL
-`db_result: 1`. Record actual command output and date in a later
-evidence commit; do not claim these checks passed from static CI alone.
-
-To inspect from your own browser/terminal **without exposing port 80**
-on the cloud firewall:
+To inspect the API over a private SSH tunnel before automatic teardown,
+set a temporary hold for the live demo:
 
 ```bash
-# Terminal 1 (leave running):
-bash scripts/k3s/port-forward.sh
+AWS_PROFILE=vps-lab LAB_APP_RUNTIME=k3s LAB_HOLD_MINUTES=30 \
+  bash scripts/run-aws-three-tier.sh --run
 
-# Terminal 2:
-curl -fsS http://127.0.0.1:18080/health
-curl -fsS http://127.0.0.1:18080/healthz
+# In a second terminal while the first is holding resources:
+bash scripts/k3s/port-forward.sh "/path/printed/by/runner/ssh_config"
 curl -fsS http://127.0.0.1:18080/readyz
 ```
 
-Confirm HTTP/6443/5432 are absent from the Hetzner firewall. The PostgreSQL NetworkPolicy configuration is present; an actual
-negative-path network test remains a later milestone.
+Do not commit the private run directory, credentials, Terraform state,
+or any database passwords. Once the run returns, confirm the output
+says Terraform destruction completed. Do not leave the hold set for
+unattended runs.
 
-## 4. Reproducibility and caveats
+## Operator checks
 
-The official k3s installer is downloaded from `https://get.k3s.io`
-only when no k3s binary exists. Its stable channel can change; set
-`K3S_VERSION` to a verified upstream release to pin a particular
-rebuild. Rerunning Ansible preserves the installation and does not
-upgrade k3s automatically. The PostgreSQL image is pinned to major
-version 16, rather than a specific patch digest.
-
-The Hetzner server is deployed with Ubuntu 24.04, no public IPv6,
-no Hetzner backups, no public ingress, a restricted user `labops`,
-root SSH disabled and kubeconfig mode 0600. The only remotely reachable
-provider-firewall port is SSH from the specified /32. SSH uses
-`StrictHostKeyChecking=accept-new` for first boot: check the initial
-host key fingerprint through an independent trusted channel before
-using the server for anything sensitive.
-
-## 5. Tear down the isolated lab
-
-**Destroying the VM destroys the PostgreSQL local-path data.** For the
-disaster-recovery project, establish an independent backup FIRST.
+Run the non-billable checks anytime:
 
 ```bash
-terraform -chdir=terraform/hetzner-k3s plan -destroy
-# Review that only k3s-lab-* resources appear.
-terraform -chdir=terraform/hetzner-k3s destroy
-terraform -chdir=terraform/hetzner-k3s state list
+terraform fmt -check -recursive terraform/aws-three-tier
+terraform -chdir=terraform/aws-three-tier init -backend=false
+terraform -chdir=terraform/aws-three-tier validate
+python3 scripts/k3s/validate_manifests.py  # needs PyYAML
+bash -n scripts/k3s/*.sh scripts/run-aws-three-tier.sh
 ```
 
-Do not run `terraform destroy` from any other Terraform directory;
-the existing AWS and TorKit staging work are separate and untouched.
-No Hetzner credentials are stored in GitHub Actions.
+The Kubernetes CI workflow and original AWS Terraform/Ansible workflow
+run automatically on PRs and never create cloud resources. Successful
+static checks and local Docker integration tests do **not** imply a
+successful live AWS k3s deployment. Capture actual logs from the
+billable run before claiming this architecture was tested.
+
+## Teardown and later milestones
+
+The original AWS runner attempts Terraform destroy even after failure.
+Use its printed recovery command if teardown fails. Retain any needed
+evidence **after verifying no billable lab resources remain**. Project 1
+PR #3 will add further rollout/recovery exercises; Project 2 adds
+CloudWatch/IAM/incident response; Project 3 will add a genuinely
+independent PostgreSQL backup and rebuild test with measured RPO/RTO.

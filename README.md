@@ -76,23 +76,44 @@ new `/healthz` (process) and `/readyz` (database) endpoints support distinct
 Kubernetes liveness and readiness checks.
 
 See [application testing and architecture](docs/three-tier-api.md).
-The isolated k3s deployment code is available below; live VPS provisioning and
-end-to-end cluster validation must be performed separately.
+The opt-in AWS k3s deployment code is available below; live AWS Kubernetes
+provisioning and end-to-end cluster validation must be performed separately.
 
-## Isolated k3s Kubernetes lab
+## Optional AWS k3s application runtime
 
-[Terraform](terraform/hetzner-k3s/) defines **a separate disposable** Hetzner
-VM with an operator-/32 SSH-only cloud firewall. [Ansible](ansible/k3s/)
-installs k3s. [Kubernetes manifests](kubernetes/k3s/) deploy two replicas
-of the shared Flask API plus PostgreSQL with a local-path persistent volume.
+The existing **three-EC2 AWS three-tier Terraform plan** now supports an
+opt-in Kubernetes runtime on its private application server. The public web
+EC2 still hosts Nginx and the bastion, while PostgreSQL stays on its own
+private EC2 and encrypted gp3 EBS volume. Only the application tier
+changes from Gunicorn/systemd to single-node k3s with **two Flask replicas**.
 
-[Operator runbook and verification](docs/kubernetes-k3s.md) ·
-[Static validation workflow](.github/workflows/k3s-validation.yml).
+```text
+Workstation --operator /32--> Public EC2: Nginx + SSH bastion
+                                  |
+                        private NodePort :30080
+                                  v
+                         Private app EC2: k3s
+                         Flask Deployment (2 Pods)
+                         /healthz + /readyz
+                                  |
+                             TCP :5432
+                                  v
+                         Private DB EC2: PostgreSQL 16
+```
 
-The k3s lab has not yet been deployed and verified live. GitHub Actions never
-uses cloud credentials or runs Terraform apply. No public application ingress
-or remote Kubernetes API is enabled. The existing TorKit staging VPS is not
-a deployment target.
+The k3s application VM is sized separately (`t3.medium` by default).
+A small local-path PVC demonstrates persistence across test Pod replacement;
+**the database remains on the dedicated EC2 instance** rather than running
+as a Kubernetes StatefulSet. No public Kubernetes API or NodePort is opened.
+
+Run the existing ephemeral runner with `LAB_APP_RUNTIME=k3s` to select
+this variant; the original `systemd` mode remains the default. Both
+variants attempt automated AWS teardown after collecting verification
+evidence. No live k3s AWS deployment has yet been verified.
+
+[Architecture and runbook](docs/kubernetes-k3s.md) ·
+[Static CI checks](.github/workflows/k3s-validation.yml) ·
+[Kubernetes manifests](kubernetes/k3s/).
 
 ## Hetzner VPS automation
 
