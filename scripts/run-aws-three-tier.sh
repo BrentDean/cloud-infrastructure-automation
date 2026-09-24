@@ -20,6 +20,7 @@ export AWS_DEFAULT_REGION="$AWS_REGION"
 export AWS_PAGER='' ANSIBLE_NOCOLOR=1
 LAB_HOLD_MINUTES="${LAB_HOLD_MINUTES:-0}"
 LAB_APP_RUNTIME="${LAB_APP_RUNTIME:-systemd}"
+export LAB_APP_RUNTIME
 if [[ "$LAB_APP_RUNTIME" != systemd && "$LAB_APP_RUNTIME" != k3s ]]; then
   echo 'LAB_APP_RUNTIME must be systemd or k3s.' >&2
   exit 2
