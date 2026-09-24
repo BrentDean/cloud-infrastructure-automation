@@ -28,7 +28,7 @@ locals {
 resource "aws_instance" "role" {
   for_each                    = local.instances
   ami                         = data.aws_ami.ubuntu.id
-  instance_type               = var.instance_type
+  instance_type               = var.app_runtime == "k3s" && each.key == "app" ? var.k3s_app_instance_type : var.instance_type
   subnet_id                   = each.value.subnet_id
   vpc_security_group_ids      = [each.value.sg_id]
   associate_public_ip_address = each.value.public_ip
@@ -44,11 +44,11 @@ resource "aws_instance" "role" {
   }
   root_block_device {
     volume_type           = "gp3"
-    volume_size           = 12
+    volume_size           = var.app_runtime == "k3s" && each.key == "app" ? 24 : 12
     encrypted             = true
     delete_on_termination = true
   }
-  tags = { Name = "lab-${each.key}-${var.run_id}", Tier = each.key }
+  tags = { Name = "lab-${each.key}-${var.run_id}", Tier = each.key, Runtime = each.key == "app" ? var.app_runtime : "native" }
   depends_on = [
     aws_route_table_association.public,
     aws_route_table_association.private,

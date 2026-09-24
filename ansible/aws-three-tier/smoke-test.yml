@@ -18,7 +18,7 @@
     - name: Web can reach application HTTP port
       ansible.builtin.wait_for:
         host: "{{ hostvars['app'].lab_private_ip }}"
-        port: 8000
+        port: "{{ lab_app_port | default(8000) | int }}"
         connect_timeout: 2
         timeout: 20
         state: started
