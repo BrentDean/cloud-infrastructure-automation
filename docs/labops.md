@@ -1,4 +1,4 @@
-# LabOps: persistent security incident workflow (first application milestone)
+# LabOps: persistent security operations application
 
 LabOps is the application built **on** the disposable AWS three-tier lab. It
 does not modify LaunchShell, TorKit, or any Hetzner staging service. The incident-management and sanitized synthetic Cowrie event-ingestion milestones
@@ -172,3 +172,101 @@ threshold, Flask restart, DB outage and restored results.
 PostgreSQL containers. The September 22/24 AWS runtime screenshots predate
 LabOps and do not prove this investigation ran on AWS. A future live AWS
 exercise requires separate explicit authorization and verified teardown.
+
+
+## Browser dashboard (PR #6)
+
+The first complete browser workflow is **/dashboard**. This is part of the
+same Flask app and uses the same PostgreSQL-backed API in both AWS runtimes.
+There is no externally hosted React bundle, CDN, external font, analytics
+script, separate front-end host, new EC2 instance, or alternate database.
+
+The dashboard includes:
+- Desktop/mobile responsive navigation, incident snapshot (the *latest 100*
+  records only, explicitly **not** lifetime/global statistics), and a searchable
+  status-filtered incident queue.
+- Readable detail and triage form (status/notes), and an explicit create
+  incident dialog. Both writes call the existing versioned API; nothing is
+  silently simulated by JavaScript.
+- Up to 100 latest Cowrie events for the selected incident, time-window and
+  threshold controls, source-IP activity bars, and read-only investigation
+  results. The UI does **not** infer intent or block an IP.
+- Actual loading, empty, database-unavailable, retry and refresh states,
+  keyboard navigation, accessible labels and reduced-motion styling.
+  API-provided text enters the DOM via textContent, never innerHTML.
+- Local static CSS/JS, restrictive dashboard CSP, nosniff, no-store,
+  frame denial, and no-referrer headers. Only /dashboard, /api/v1/*,
+  /static/labops/* and legacy /health are proxied by Nginx; all other
+  web-tier paths continue to return 404.
+
+**The app is an operator-only lab.** The AWS web security group still admits
+only the operator IPv4 /32 to port 80. There is not yet application
+authentication or TLS. Do not expose the dashboard publicly or load real
+honeypot traffic, client data, credentials, or institutional records.
+
+### Explore locally without AWS
+
+The existing compose integration file is also sufficient for a disposable
+local demo. From the repository root, with Docker Compose and Python 3
+available, run these commands in one shell:
+
+~~~bash
+export COMPOSE_PROJECT_NAME=labops-operator-demo
+export LAB_DB_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
+export API_TEST_PORT=18080
+docker compose -f apps/three-tier-api/compose.integration.yaml up -d postgres
+# Wait until the PostgreSQL container is healthy.
+docker compose -f apps/three-tier-api/compose.integration.yaml exec -T postgres \
+  psql -U labuser -d labdb -v ON_ERROR_STOP=1 \
+  < apps/three-tier-api/migrations/0001_incidents.sql
+docker compose -f apps/three-tier-api/compose.integration.yaml exec -T postgres \
+  psql -U labuser -d labdb -v ON_ERROR_STOP=1 \
+  < apps/three-tier-api/migrations/0002_security_events.sql
+docker compose -f apps/three-tier-api/compose.integration.yaml up -d --build api
+
+# Writes only deliberately fictional incidents/events to loopback:
+python3 scripts/seed-labops-demo.py --run
+~~~
+
+Open the exact /dashboard?incident=... URL printed by the seeder, or
+http://127.0.0.1:18080/dashboard. The first API launch may need a few seconds
+to become ready. The seed script rejects non-loopback targets and requires an
+explicit --run. Re-running it adds more synthetic incidents by design. The
+dashboard also supports creating and triaging incidents without the seeder.
+
+**Stop and delete only the isolated local demo** (including its disposable
+PostgreSQL volume):
+
+~~~bash
+docker compose -f apps/three-tier-api/compose.integration.yaml down -v
+~~~
+
+Do not run this cleanup command against an unrelated Docker Compose project.
+The PostgreSQL volume here is ephemeral; Terraform destroy likewise deletes
+the disposable AWS database. Long-lived independent backups are not implemented.
+
+### Browser regression evidence
+
+The GitHub Actions application workflow runs the full Compose integration
+suite *and real headless Chromium* against the localhost dashboard. It
+creates/triages through the UI, inserts sanitized events through the API,
+checks the source-IP analysis, browser reload persistence, an injected 503
+and recovery, and mobile horizontal overflow. Screenshots of the desktop
+investigation, degraded state, and mobile layout are uploaded as the
+**labops-browser-preview** workflow artifact (synthetic data only; retention
+14 days). No AWS credentials or billable cloud resources are required.
+
+These local browser screenshots are **not** evidence that the updated
+LabOps dashboard was live-deployed on AWS. The historical September 22/24
+infrastructure screenshots remain separate and are labeled as such.
+
+### LaunchShell Dark design system
+
+LabOps uses LaunchShell's public palette without copying the light marketing
+site: primary action blue `#1263ff`, healthy-state green `#12c995`, and
+dark navy `#061226`. The dashboard retains dark, operator-focused surfaces;
+incident severity and threshold signals remain amber/red, while green
+continues to mean operational health rather than threat severity. The footer
+identifies it as **A LaunchShell project**. No shared CSS dependency, extra
+AWS resources, cross-project deployment coupling, external fonts, or new
+third-party browser requests are introduced.

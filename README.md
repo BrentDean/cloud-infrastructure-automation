@@ -6,7 +6,7 @@
 
 **One AWS lab, two application runtimes, a verified end-to-end infrastructure lifecycle.**
 
-**LabOps application extension (local/CI verification, AWS regression pending):** Alongside the two live-verified infrastructure runtimes, the shared Flask/PostgreSQL app now supports persistent incident triage, idempotent sanitized Cowrie event ingestion, and a **read-only, time-windowed failed-login investigation** with per-source counts and threshold signals. No automated security response is executed. [API contracts and testing →](docs/labops.md)
+**LabOps operator dashboard (local/CI verification; AWS regression pending):** The same Flask/PostgreSQL application now has a responsive, same-origin browser workspace for incident triage, sanitized Cowrie event evidence, and read-only, time-windowed SSH investigation. It uses the existing three-tier infrastructure and supports an explicitly seeded localhost demo. No security response is executed. [Dashboard, API contracts and local demo →](docs/labops.md)
 
 Build a three-tier AWS environment from an empty VPC, configure the Linux hosts, deploy a database-backed Python API through either **Gunicorn/systemd** or **k3s**, verify allowed and denied network paths, and destroy the billable resources. The project is designed to be rebuilt on demand, **not** left running as a public production service.
 

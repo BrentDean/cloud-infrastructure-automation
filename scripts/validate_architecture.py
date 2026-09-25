@@ -86,6 +86,14 @@ def main() -> None:
     require("location = /health" in content, "Original end-to-end health route must remain")
     require("location ^~ /api/v1/" in content,
             "LabOps API must be routed via the existing operator-restricted web tier")
+    require("location = /dashboard" in content and "location ^~ /static/labops/" in content,
+            "Operator-only Nginx must proxy the browser UI and bundled static assets")
+    require("templates/" in playbook and "static/" in playbook,
+            "systemd runtime must deploy both dashboard template and static assets")
+    dockerfile = read("apps/three-tier-api/Dockerfile")
+    require("COPY --chown=appuser:appuser templates/" in dockerfile
+            and "COPY --chown=appuser:appuser static/" in dockerfile,
+            "k3s Docker image must package the same dashboard as systemd")
     require("0001_incidents.sql" in playbook and "db.py" in playbook,
             "Both AWS app runtimes require shared LabOps schema and Python module")
     require("0002_security_events.sql" in playbook,

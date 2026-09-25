@@ -16,6 +16,10 @@ for cmd in docker curl python3; do
 done
 
 cleanup() {
+  local status=$?
+  if (( status != 0 )); then
+    docker compose -f "$COMPOSE" logs --tail 100 api postgres >&2 || true
+  fi
   docker compose -f "$COMPOSE" down -v --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -60,6 +64,29 @@ wait_for_ready() {
 wait_for_ready
 curl -fsS --max-time 5 "$BASE_URL/health" |
   python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["status"]=="ok" and d["db_result"]==1'
+
+echo '=== Operator dashboard HTML, local static assets and security headers ==='
+curl -fsS --max-time 5 "$BASE_URL/dashboard" |
+  python3 -c '
+import sys
+html=sys.stdin.read()
+assert "LabOps" in html
+assert "id=\"incident-list\"" in html and "id=\"source-chart\"" in html
+assert "/static/labops/dashboard.css" in html
+assert "/static/labops/dashboard.js" in html
+'
+curl -fsS --max-time 5 "$BASE_URL/static/labops/dashboard.css" |
+  python3 -c 'import sys; assert ".workspace-grid" in sys.stdin.read()'
+curl -fsS --max-time 5 "$BASE_URL/static/labops/dashboard.js" |
+  python3 -c 'import sys; assert "/api/v1/incidents" in sys.stdin.read()'
+curl -fsS --max-time 5 -D - -o /dev/null "$BASE_URL/dashboard" |
+  python3 -c '
+import sys
+headers=sys.stdin.read().lower()
+assert "content-security-policy:" in headers
+assert "script-src '\''self'\''" in headers
+assert "cache-control: no-store" in headers
+'
 
 echo '=== LabOps incident persistence through the actual API and PostgreSQL ==='
 created="$(curl -fsS --max-time 8 -X POST "$BASE_URL/api/v1/incidents" \
@@ -237,4 +264,8 @@ import json,sys
 report=json.load(sys.stdin)["investigation"]
 assert report["total_failed_logins"]==6 and report["sources"][0]["threshold_met"]
 '
-echo 'PASS: incident/event persistence, repeatable SSH investigation, restart, DB outage/recovery, health contracts'
+if [[ "${LABOPS_BROWSER_TEST:-0}" == 1 ]]; then
+  python3 "$ROOT/scripts/test-labops-dashboard-browser.py"
+fi
+
+echo 'PASS: incident/event persistence, SSH investigation, dashboard assets, restart, DB outage/recovery, health contracts'

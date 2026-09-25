@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#061226">
+  <meta name="description" content="LabOps — a PostgreSQL-backed security operations workspace for a disposable AWS infrastructure lab.">
+  <title>LabOps · Security operations</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='labops/dashboard.css') }}">
+  <script src="{{ url_for('static', filename='labops/dashboard.js') }}" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Workspace navigation">
+      <a class="brand" href="/dashboard" aria-label="LabOps home">
+        <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+        <span class="brand-copy"><strong>LabOps</strong><small>SECURITY WORKSPACE</small></span>
+      </a>
+      <div class="sidebar-heading">WORKSPACE</div>
+      <nav class="nav" aria-label="Sections">
+        <a class="nav-item active" href="#overview" aria-current="page"><span class="nav-icon" aria-hidden="true">◫</span> Overview <span class="nav-key">01</span></a>
+        <a class="nav-item" href="#incidents"><span class="nav-icon" aria-hidden="true">▤</span> Incidents <span class="nav-key">02</span></a>
+        <a class="nav-item" href="#investigations"><span class="nav-icon" aria-hidden="true">⌕</span> Investigations <span class="nav-key">03</span></a>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="environment"><span class="environment-icon" aria-hidden="true">⌘</span><span><strong>AWS LAB</strong><small>Three-tier / private data</small></span></div>
+        <div class="sidebar-footnote">Synthetic events only.<br>No automated response actions.</div>
+        <span class="version">LABOPS / OPERATOR PREVIEW</span>
+      </div>
+    </aside>
+
+    <main id="main-content" class="main">
+      <header class="topbar">
+        <div class="crumb"><span>Workspace</span><span class="crumb-separator">/</span><strong>Security overview</strong></div>
+        <div class="top-actions">
+          <span id="connection-pill" class="connection-pill" data-state="loading"><span class="status-dot"></span><span id="connection-text">Checking database</span></span>
+          <button id="refresh-button" class="button button-subtle" type="button"><span class="button-icon" aria-hidden="true">↻</span> Refresh</button>
+          <button id="new-incident-button" class="button button-primary" type="button"><span aria-hidden="true">＋</span> New incident</button>
+        </div>
+      </header>
+
+      <div class="main-body" id="overview">
+        <div class="page-intro">
+          <div><div class="eyebrow"><span class="eyebrow-line"></span> SECURITY OPERATIONS / OVERVIEW</div><h1>Make sense of the signal<span class="heading-period">.</span></h1><p>Investigate authentication activity, manage incidents, and keep the evidence in one place.</p></div>
+          <div class="snapshot"><span class="snapshot-label">LAST SYNC</span><strong id="last-sync">Not yet synchronized</strong><small>PostgreSQL-backed · manual refresh</small></div>
+        </div>
+
+        <section class="hero" aria-label="Security operations summary">
+          <div class="hero-copy"><span class="hero-kicker"><span class="hero-kicker-dot"></span> LAB ENVIRONMENT / ACTIVE WORKSPACE</span><h2>From raw events<br>to <em>clearer decisions.</em></h2><p>Follow each incident from first observation to investigation, with reproducible SSH failure analysis and a persistent event trail.</p><a href="#incidents" class="hero-link">Explore incident queue <span aria-hidden="true">↗</span></a></div>
+          <div class="hero-visual" aria-hidden="true">
+            <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit orbit-three"></div>
+            <div class="hero-core"><div class="hero-core-inner"><span>LO</span><small>SEC OPS</small></div></div>
+            <div class="hero-float hero-float-a"><span class="float-dot"></span> EVENT INGESTION</div>
+            <div class="hero-float hero-float-b">POSTGRESQL <span class="float-line"></span> PERSISTENT</div>
+            <div class="hero-float hero-float-c">READ-ONLY ANALYSIS <span class="float-dot"></span></div>
+          </div>
+        </section>
+
+        <section class="summary-section" aria-labelledby="summary-title">
+          <div class="section-topline"><h2 id="summary-title">Incident snapshot</h2><span class="section-context">Latest 100 incidents · not lifetime totals</span></div>
+          <div class="metrics" aria-label="Summary of loaded incidents">
+            <article class="metric"><span class="metric-icon metric-icon-neutral" aria-hidden="true">▧</span><div class="metric-meta">LOADED INCIDENTS</div><strong id="count-visible" class="metric-number">—</strong><div class="metric-description">Across latest 100 records</div></article>
+            <article class="metric"><span class="metric-icon metric-icon-alert" aria-hidden="true">◉</span><div class="metric-meta">OPEN</div><strong id="count-open" class="metric-number">—</strong><div class="metric-description">Awaiting investigation</div></article>
+            <article class="metric"><span class="metric-icon metric-icon-progress" aria-hidden="true">◷</span><div class="metric-meta">INVESTIGATING</div><strong id="count-investigating" class="metric-number">—</strong><div class="metric-description">Under active review</div></article>
+            <article class="metric"><span class="metric-icon metric-icon-good" aria-hidden="true">✓</span><div class="metric-meta">RESOLVED</div><strong id="count-resolved" class="metric-number">—</strong><div class="metric-description">Marked complete</div></article>
+          </div>
+        </section>
+
+        <div id="global-error" class="notice notice-error hidden" role="alert"><strong>Unable to refresh LabOps.</strong><span id="global-error-text">The API is unavailable. Your current view may be out of date.</span><button id="retry-button" class="notice-action" type="button">Retry</button></div>
+
+        <div class="workspace-grid">
+          <section class="panel incident-panel" id="incidents" aria-labelledby="incidents-title">
+            <div class="panel-header"><div><span class="panel-kicker">QUEUE / 01</span><h2 id="incidents-title">Incidents <span id="incident-list-count" class="heading-count">—</span></h2><p>Choose a record to review its investigation.</p></div><span class="panel-decoration" aria-hidden="true">↗</span></div>
+            <div class="filter-row"><label class="search-wrap"><span class="search-icon" aria-hidden="true">⌕</span><span class="sr-only">Search incidents</span><input id="incident-search" type="search" placeholder="Search title or incident ID" autocomplete="off"></label><label class="filter-wrap"><span class="sr-only">Filter incident status</span><select id="status-filter"><option value="all">All statuses</option><option value="open">Open</option><option value="investigating">Investigating</option><option value="resolved">Resolved</option></select></label></div>
+            <div id="incidents-loading" class="loading-state" role="status"><span class="spinner"></span> Fetching incidents…</div>
+            <div id="incident-list" class="incident-list" aria-label="Incident records"></div>
+            <div id="incidents-empty" class="empty-state hidden"><span class="empty-glyph" aria-hidden="true">▧</span><h3>No incidents to display</h3><p id="incidents-empty-text">Create your first synthetic incident to begin.</p><button id="empty-create-button" type="button" class="button button-primary">Create incident</button></div>
+            <div class="panel-footer">Select an incident to inspect · Latest 100 records</div>
+          </section>
+
+          <section class="panel detail-panel" aria-labelledby="detail-title">
+            <div class="panel-header detail-header"><div><span class="panel-kicker">CASE FILE / 02</span><h2 id="detail-title">Incident details</h2><p>Evidence and investigation in context.</p></div><span class="outline-icon" aria-hidden="true">◇</span></div>
+            <div id="detail-placeholder" class="detail-placeholder"><div class="placeholder-graphic" aria-hidden="true"><span>⌕</span></div><h3>Select an incident</h3><p>Open a record from the queue to see its investigation, activity, and triage controls.</p></div>
+            <div id="detail-content" class="hidden">
+              <div class="case-heading"><div class="case-id-row"><span id="case-id" class="mono muted">—</span><span id="case-severity" class="badge">—</span></div><h3 id="case-title"></h3><p id="case-description"></p><div class="case-meta"><span>CREATED <strong id="case-created">—</strong></span><span>UPDATED <strong id="case-updated">—</strong></span></div></div>
+              <form id="triage-form" class="triage-form"><div class="field-header"><h3>Case triage</h3><span class="label-aside">SAVED TO POSTGRESQL</span></div><label for="case-status">Status</label><select id="case-status" name="status"><option value="open">Open</option><option value="investigating">Investigating</option><option value="resolved">Resolved</option></select><label for="case-notes">Analyst notes</label><textarea id="case-notes" name="notes" maxlength="4000" rows="3" placeholder="Record what you observed (synthetic data only)"></textarea><div class="triage-actions"><span id="triage-message" role="status" aria-live="polite"></span><button id="save-triage" class="button button-secondary" type="submit">Save changes <span aria-hidden="true">→</span></button></div></form>
+            </div>
+          </section>
+        </div>
+
+        <section class="panel investigation-panel" id="investigations" aria-labelledby="investigation-title">
+          <div class="panel-header investigation-header"><div><span class="panel-kicker">ANALYSIS / 03</span><h2 id="investigation-title">SSH login investigation</h2><p>Repeatable analysis of failed authentication events for the selected incident.</p></div><span class="analysis-label"><span></span> READ-ONLY PLAYBOOK</span></div>
+          <div class="investigation-toolbar"><label>TIME WINDOW<select id="window-filter"><option value="15">Last 15 minutes</option><option value="60" selected>Last hour</option><option value="360">Last 6 hours</option><option value="1440">Last 24 hours</option></select></label><label>ATTEMPT THRESHOLD<select id="threshold-filter"><option value="2">2 or more</option><option value="5" selected>5 or more</option><option value="10">10 or more</option><option value="25">25 or more</option></select></label><button id="run-investigation" class="button button-secondary" type="button">Run analysis <span aria-hidden="true">↗</span></button><span class="toolbar-hint">Signal threshold ≠ proof of attack</span></div>
+          <div id="investigation-empty" class="analysis-empty"><span class="analysis-empty-icon" aria-hidden="true">⌁</span><div><strong>No investigation selected</strong><p>Choose an incident above, then run a read-only SSH analysis.</p></div></div>
+          <div id="investigation-result" class="hidden">
+            <div class="analysis-metrics"><div><span>FAILED LOGINS</span><strong id="analysis-attempts">0</strong></div><div><span>UNIQUE SOURCE IPS</span><strong id="analysis-ips">0</strong></div><div><span>OBSERVATION WINDOW</span><strong id="analysis-window">—</strong></div><div><span>EXECUTED RESPONSE</span><strong class="none">None</strong></div></div>
+            <div class="analysis-content"><div class="analysis-table-head"><h3>Source IP activity</h3><span id="analysis-range" class="mono muted"></span></div><div id="source-chart" class="source-chart"></div><p id="analysis-note" class="analysis-note">A threshold is an investigation signal, not a determination of intent.</p></div>
+          </div>
+        </section>
+
+        <section class="panel events-panel" aria-labelledby="events-title"><div class="panel-header"><div><span class="panel-kicker">EVIDENCE / 04</span><h2 id="events-title">Recent security events</h2><p>Sanitized Cowrie authentication failures linked to the selected incident.</p></div><span id="event-count" class="heading-count">—</span></div><div class="table-scroll"><table><thead><tr><th scope="col">SOURCE IP</th><th scope="col">USERNAME</th><th scope="col">EVENT</th><th scope="col">OBSERVED (LOCAL)</th></tr></thead><tbody id="event-rows"><tr><td colspan="4" class="table-empty">Select an incident to view associated events.</td></tr></tbody></table></div><div class="panel-footer">Up to 100 latest events · Manual incident association</div></section>
+
+        <footer class="main-footer"><span><span class="footer-brand">A LaunchShell project</span> <span class="footer-separator">/</span> LabOps · Flask, PostgreSQL &amp; AWS infrastructure</span><span>DISPOSABLE LAB · SYNTHETIC DATA ONLY</span></footer>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="create-dialog" class="create-dialog" aria-labelledby="create-title"><form id="create-form" class="create-form" method="dialog"><div class="dialog-top"><span class="panel-kicker">NEW CASE / MANUAL INTAKE</span><button id="close-dialog" class="icon-button" type="button" aria-label="Close dialog">×</button></div><h2 id="create-title">Create an incident</h2><p>Start a new investigation using synthetic, non-sensitive information.</p><label for="new-title">Incident title</label><input id="new-title" name="title" required minlength="1" maxlength="120" placeholder="e.g. Repeated SSH authentication failures"><label for="new-description">Description</label><textarea id="new-description" name="description" required minlength="1" maxlength="2000" rows="4" placeholder="What happened? What should be investigated?"></textarea><label for="new-severity">Severity</label><select id="new-severity" name="severity"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option><option value="critical">Critical</option></select><div id="create-error" class="form-error hidden" role="alert"></div><div class="dialog-actions"><button id="cancel-create" class="button button-subtle" type="button">Cancel</button><button id="submit-create" class="button button-primary" type="submit">Create incident <span aria-hidden="true">→</span></button></div></form></dialog>
+</body>
+</html>
