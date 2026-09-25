@@ -113,7 +113,7 @@ with sync_playwright() as playwright:
 
     page.locator("#new-event-ip").fill("198.51.100.23")
     expect(page.locator("#event-create-error")).not_to_be_visible()
-    page.screenshot(path=str(ARTIFACTS / "desktop-event-intake.png"), full_page=True)
+    page.screenshot(path=str(ARTIFACTS / "desktop-event-intake.png"), full_page=False)
 
     # A failed browser request must leave the modal, immutable idempotency key
     # and observed timestamp intact so a retry cannot create a duplicate.
