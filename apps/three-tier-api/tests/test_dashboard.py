@@ -38,6 +38,7 @@ def test_dashboard_loads_without_database_credentials(client, monkeypatch):
     assert 'id="new-event-observed"' in html
     assert 'id="count-visible"' in html
     assert '/static/labops/dashboard.css' in html
+    assert '/static/labops/launchshell-light.css' in html
     assert '/static/labops/dashboard.js' in html
     assert 'src="https://' not in html
     assert 'href="https://' not in html
@@ -63,6 +64,7 @@ def test_dashboard_security_headers_and_no_cache(client):
 
 @pytest.mark.parametrize("asset,expected_type,needle", [
     ("/static/labops/dashboard.css", "text/css", ".workspace-grid"),
+    ("/static/labops/launchshell-light.css", "text/css", "LaunchShell Light"),
     ("/static/labops/dashboard.js", "text/javascript", "/api/v1/incidents"),
 ])
 def test_static_assets_are_served_locally(client, asset, expected_type, needle):
@@ -98,3 +100,19 @@ def test_manual_evidence_entry_is_bundled_in_same_origin_js(client):
     assert 'async function attachEvent(event)' in javascript
     assert 'source_event_id: "manual-ui-" + suffix' in javascript
     assert 'await Promise.all([loadEvents(id, version), runInvestigation(id, version)])' in javascript
+
+
+def test_launchshell_light_styles_are_self_contained(client):
+    response = client.get("/static/labops/launchshell-light.css")
+    assert response.status_code == 200
+    css = response.get_data(as_text=True)
+    for name, color in (
+        ("--bg", "#f7f9fc"),
+        ("--sidebar", "#061226"),
+        ("--brand", "#1263ff"),
+        ("--green", "#12c995"),
+    ):
+        assert f"{name}: {color};" in css
+    assert "color-scheme: light;" in css
+    assert "https://" not in css
+    assert "@import" not in css

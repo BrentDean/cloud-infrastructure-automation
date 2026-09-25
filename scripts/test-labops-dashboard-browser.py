@@ -72,6 +72,18 @@ with sync_playwright() as playwright:
         "(el) => getComputedStyle(el).backgroundColor"
     ) == "rgb(18, 201, 149)"
     expect(page.locator(".footer-brand")).to_have_text("A LaunchShell project")
+    assert page.locator("body").evaluate(
+        "(el) => getComputedStyle(el).backgroundColor"
+    ) == "rgb(247, 249, 252)"
+    assert page.locator(".sidebar").evaluate(
+        "(el) => getComputedStyle(el).backgroundColor"
+    ) == "rgb(6, 18, 38)"
+    assert page.locator(".panel").first.evaluate(
+        "(el) => getComputedStyle(el).backgroundColor"
+    ) == "rgb(255, 255, 255)"
+    assert page.locator(".nav-item.active").evaluate(
+        "(el) => getComputedStyle(el).backgroundColor"
+    ) == "rgb(18, 99, 255)"
     expect(page.locator("#count-visible")).to_have_text("4")
     expect(page.locator("#incident-list .incident-row")).to_have_count(4)
     expect(page.locator("#case-title")).not_to_be_empty()
@@ -79,6 +91,9 @@ with sync_playwright() as playwright:
     # Create through the visible browser workflow, not a test-only endpoint.
     page.locator("#new-incident-button").click()
     expect(page.locator("#create-dialog")).to_be_visible()
+    assert page.locator("#create-dialog").evaluate(
+        "(el) => getComputedStyle(el).backgroundColor"
+    ) == "rgb(255, 255, 255)"
     page.locator("#new-title").fill("Synthetic repeated SSH login failures")
     page.locator("#new-description").fill(
         "Investigate five failed root/admin logins from a documentation IP."
@@ -103,6 +118,9 @@ with sync_playwright() as playwright:
     expect(page.locator("#new-event-button")).to_be_enabled()
     page.locator("#new-event-button").click()
     expect(page.locator("#event-dialog")).to_be_visible()
+    assert page.locator("#event-dialog").evaluate(
+        "(el) => getComputedStyle(el).backgroundColor"
+    ) == "rgb(255, 255, 255)"
     expect(page.locator("#event-incident-title")).to_have_text(
         "Synthetic repeated SSH login failures"
     )

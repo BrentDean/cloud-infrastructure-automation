@@ -260,16 +260,27 @@ These local browser screenshots are **not** evidence that the updated
 LabOps dashboard was live-deployed on AWS. The historical September 22/24
 infrastructure screenshots remain separate and are labeled as such.
 
-### LaunchShell Dark design system
+### LaunchShell Light design system (PR #8)
 
-LabOps uses LaunchShell's public palette without copying the light marketing
-site: primary action blue `#1263ff`, healthy-state green `#12c995`, and
-dark navy `#061226`. The dashboard retains dark, operator-focused surfaces;
-incident severity and threshold signals remain amber/red, while green
-continues to mean operational health rather than threat severity. The footer
-identifies it as **A LaunchShell project**. No shared CSS dependency, extra
-AWS resources, cross-project deployment coupling, external fonts, or new
-third-party browser requests are introduced.
+LabOps shares LaunchShell's actual visual identity rather than only its accent
+colors: the light `#f7f9fc` page, white rounded content cards, deep
+`#061226` ink and navigation, electric `#1263ff` actions, and
+`#12c995` for positive health. A compact dark blue hero connects the
+portfolio style to the operator application's security context. Amber/red
+remain reserved for severity; green does not imply attack activity.
+The footer identifies the app as **A LaunchShell project**.
+
+The self-contained, same-origin
+`apps/three-tier-api/static/labops/launchshell-light.css` stylesheet loads
+after the original responsive layout and overrides **presentation only**.
+The Flask routes, PostgreSQL models/migrations, API, CSS/JS security policy,
+mobile behavior and both AWS runtime modes remain unchanged. No external
+font, CDN, cross-project CSS dependency, extra AWS resource or new
+third-party browser request is introduced. The hero and metric tiles
+are slightly shorter so a desktop screenshot captures actionable incidents
+above the fold. The Chromium suite checks rendered light backgrounds, blue
+selected navigation, green health, both white dialogs, and the complete
+existing analyst workflow.
 
 
 ## Attach synthetic evidence from the browser (PR #7)
