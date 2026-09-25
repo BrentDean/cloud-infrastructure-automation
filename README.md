@@ -4,11 +4,72 @@
 [![Shared Python API validation](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/python-api-validation.yml/badge.svg)](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/python-api-validation.yml)
 [![AWS k3s mode validation](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/k3s-validation.yml/badge.svg)](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/k3s-validation.yml)
 
-**One AWS lab, two application runtimes, a verified end-to-end infrastructure lifecycle.**
+**Disposable AWS infrastructure + a working security operations application.**
 
-**LabOps operator dashboard (local/CI verification; AWS regression pending):** The same Flask/PostgreSQL application now has a responsive, same-origin browser workspace for incident triage, manual synthetic Cowrie evidence entry, and read-only, time-windowed SSH investigation. It uses the existing three-tier infrastructure and supports an explicitly seeded localhost demo. No security response is executed. [Dashboard, API contracts and local demo →](docs/labops.md)
+Terraform provisions a restricted three-tier AWS environment; Ansible configures the Linux hosts; the same Flask/PostgreSQL service runs through **Gunicorn/systemd** or **single-node k3s**. Automated checks exercise database connectivity and network isolation before the billable infrastructure is destroyed. The lab is designed to be rebuilt on demand, not kept online as a production service.
 
-Build a three-tier AWS environment from an empty VPC, configure the Linux hosts, deploy a database-backed Python API through either **Gunicorn/systemd** or **k3s**, verify allowed and denied network paths, and destroy the billable resources. The project is designed to be rebuilt on demand, **not** left running as a public production service.
+**LabOps** is the browser application built on that stack—not a static mockup. It provides PostgreSQL-backed incident creation, triage notes, explicitly attached *synthetic* SSH failed-login evidence, and read-only source-IP analysis. Run it locally with Docker, without creating AWS resources. The UI uses the **LaunchShell Dark** visual system. [Application architecture and API contracts →](docs/labops.md)
+
+| Verified scope | What the evidence establishes |
+| --- | --- |
+| AWS infrastructure | Both runtime modes were live-tested and fully torn down in September 2026. |
+| Current LabOps app | Python, isolated Docker/PostgreSQL, and real Chromium browser workflows pass in CI; these app changes **have not been re-deployed to AWS**. |
+| Real security telemetry | Not connected. No active T-Pot honeypots, Splunk integration, automated response, or real-world attack feed is claimed. |
+
+## Run LabOps locally (no AWS)
+
+**Requirements:** Docker with Compose v2 and Python 3. This is a loopback-only prototype using fictional incidents and documentation-reserved IPs, not a public SOC service.
+
+From the repository root, create a persistent, private Compose configuration **once**. Reuse this file across terminals; changing `LAB_DB_PASSWORD` alone does **not** change the password inside an existing PostgreSQL volume.
+
+```bash
+cd /path/to/cloud-infrastructure-automation
+
+mkdir -p "$HOME/.config/labops-demo"
+chmod 700 "$HOME/.config/labops-demo"
+LABOPS_ENV="$HOME/.config/labops-demo/compose.env"
+
+if [ ! -f "$LABOPS_ENV" ]; then
+  (
+    umask 077
+    printf 'COMPOSE_PROJECT_NAME=labops-operator-demo\nAPI_TEST_PORT=18080\nLAB_DB_PASSWORD=%s\n' \
+      "$(python3 -c 'import secrets; print(secrets.token_hex(24))')" > "$LABOPS_ENV"
+  )
+fi
+
+docker compose --env-file "$LABOPS_ENV" \
+  -f apps/three-tier-api/compose.integration.yaml up -d --wait postgres
+
+# Versioned, idempotent migrations for the local demo database.
+for migration in apps/three-tier-api/migrations/*.sql; do
+  docker compose --env-file "$LABOPS_ENV" \
+    -f apps/three-tier-api/compose.integration.yaml exec -T postgres \
+    psql -U labuser -d labdb -v ON_ERROR_STOP=1 < "$migration"
+done
+
+docker compose --env-file "$LABOPS_ENV" \
+  -f apps/three-tier-api/compose.integration.yaml up -d --build --wait api
+
+# Optional: create four fictional incidents and seven fictional SSH events.
+# Run once unless you deliberately want more demo records.
+python3 scripts/seed-labops-demo.py --run
+```
+
+Open **[http://127.0.0.1:18080/dashboard](http://127.0.0.1:18080/dashboard)**, or the incident-specific URL printed by the seeder. Create an incident, change its triage status, attach a fictional `cowrie.login.failed` event, and inspect the updated investigation. Changes persist in the local PostgreSQL volume across container restarts.
+
+Stop the demo **without deleting its database**:
+
+```bash
+LABOPS_ENV="$HOME/.config/labops-demo/compose.env"
+docker compose --env-file "$LABOPS_ENV" \
+  -f apps/three-tier-api/compose.integration.yaml down
+```
+
+Do **not** add `-v` unless you intend to remove the demo's PostgreSQL volume. The first-time password creation above is for a fresh demo; if you have an existing volume, reuse its original credentials. [Full LabOps behavior, restrictions, and CI screenshots →](docs/labops.md)
+
+## Historical live AWS validation
+
+The two live runs below verified the infrastructure **before** the later LabOps incident/dashboard features. Do not interpret their screenshots as evidence of a live AWS LabOps deployment.
 
 | Live deployment | Date | Result |
 | --- | --- | --- |
@@ -113,6 +174,7 @@ The DB and web Ansible plays finished with `failed=0`, then both returned `chang
 | Linux automation | Ansible apt, config files, systemd services, handlers, cloud-init waits, repeatable configuration, idempotency check |
 | Containers and Kubernetes | Docker build, private SSH image transfer, containerd import, k3s, Namespace, Deployment, Service, NodePort, health probes |
 | Application integration | Shared Flask source, dedicated PostgreSQL 16, DB-backed health API and app credentials supplied at runtime |
+| LabOps application | Versioned PostgreSQL incidents/events, manual synthetic SSH evidence ingestion with idempotent retry, browser-based triage and read-only source-IP investigation; locally and CI tested |
 | Security controls | Web /32, no public app/DB IP, explicit denied-path test, non-root containers, runtime-only Kubernetes Secret, encrypted EBS |
 | Storage testing | Test-only local-path PVC marker retained after Pod replacement; no DR claim |
 | CI and test automation | Python API tests, local Docker/PostgreSQL outage/recovery, Terraform/Ansible validation, offline k3s/cross-layer contract checks |
@@ -132,6 +194,7 @@ The DB and web Ansible plays finished with `failed=0`, then both returned `chang
 | Image deployment and live Kubernetes assertions | [`scripts/k3s/aws-deploy.sh`](scripts/k3s/aws-deploy.sh), [`aws-verify.sh`](scripts/k3s/aws-verify.sh) |
 | Three-tier connectivity and negative security checks | [`ansible/aws-three-tier/smoke-test.yml`](ansible/aws-three-tier/smoke-test.yml) |
 | Shared Flask application and container | [`apps/three-tier-api/`](apps/three-tier-api/) |
+| LabOps dashboard, evidence intake, investigation and local demo | [`docs/labops.md`](docs/labops.md), [`scripts/seed-labops-demo.py`](scripts/seed-labops-demo.py) |
 | Cross-layer and workflow validation | [`scripts/validate_architecture.py`](scripts/validate_architecture.py), [`.github/workflows/`](.github/workflows/) |
 
 ### Reproduce an ephemeral live run
@@ -171,6 +234,6 @@ The original **September 22 systemd deployment** is pictured below. These images
 
 </details>
 
-**Implemented and live-tested:** the two AWS runtime modes and the checks documented above. **Not yet implemented or verified:** Kubernetes update/failure-injection exercises; CloudWatch alerting/incident response and dedicated least-privilege IAM roles for the lab; independent PostgreSQL backup/rebuild with measured RPO/RTO. Those are the next extensions of this *same architecture*, not separate unrelated demos.
+**Implemented and live-tested on AWS:** the two infrastructure runtime modes and the checks documented above. **Implemented and verified locally/in CI:** LabOps incident management, synthetic event intake, and the browser investigation workflow. **Not yet implemented or verified:** live AWS deployment of the current LabOps application; real Splunk ingestion, VPC Flow Log/CloudTrail analysis, authentication/TLS for an externally accessible dashboard, security response; Kubernetes update/failure-injection exercises; CloudWatch alerting; independent PostgreSQL backup/rebuild with measured RPO/RTO. [Next proposed milestone: evaluate real Splunk telemetry →](https://github.com/BrentDean/cloud-infrastructure-automation/issues/9).
 
 The repository also includes [Ansible staging-server backups](ansible/backup.yml) and [infrastructure audits](ansible/audit.yml) for an **existing, separate Hetzner VPS**. The disposable AWS runner does **not** connect to or modify that server.

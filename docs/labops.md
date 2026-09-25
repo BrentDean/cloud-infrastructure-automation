@@ -78,9 +78,11 @@ must verify Nginx/API access in both runtimes, new schema deployment,
 cross-replica retrieval, and successful destruction separately. No new AWS
 runtime evidence is claimed by this change.
 
-Later bounded milestones: security-event ingest/deduplication, incident-event
-relationships, read-only investigation playbook, audited execution history,
-authenticated approvals, and carefully constrained response integrations.
+The later sections document implemented security-event ingest/deduplication,
+incident-event relationships and read-only investigation. Future bounded
+milestones include **real** telemetry integrations, authenticated access and
+TLS, audited execution history, and carefully constrained response
+integrations. None is currently part of the live-verified AWS baseline.
 
 
 ## Security event ingestion: bounded Cowrie failed-login adapter (PR #4)
@@ -206,44 +208,32 @@ honeypot traffic, client data, credentials, or institutional records.
 
 ### Explore locally without AWS
 
-The existing compose integration file is also sufficient for a disposable
-local demo. From the repository root, with Docker Compose and Python 3
-available, run these commands in one shell:
+Follow the [README's local quickstart](../README.md#run-labops-locally-no-aws)
+to launch the real Flask/PostgreSQL dashboard, run both SQL migrations, and
+optionally seed four fictional incidents and seven fictional failed-login
+events. This demo requires Docker Compose and Python 3, not AWS or T-Pot.
+Its browser endpoint is http://127.0.0.1:18080/dashboard.
+
+The Compose project is explicitly named `labops-operator-demo`; the README
+saves its secret and loopback port in
+`~/.config/labops-demo/compose.env` with private filesystem permissions.
+**Reuse that same file for future `up` and `down` commands.** Losing the
+shell variables does not mean PostgreSQL lost its password; generating a new
+environment variable will not reset a password already stored in the volume.
+
+To stop the demo **while retaining its PostgreSQL volume**:
 
 ~~~bash
-export COMPOSE_PROJECT_NAME=labops-operator-demo
-export LAB_DB_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
-export API_TEST_PORT=18080
-docker compose -f apps/three-tier-api/compose.integration.yaml up -d postgres
-# Wait until the PostgreSQL container is healthy.
-docker compose -f apps/three-tier-api/compose.integration.yaml exec -T postgres \
-  psql -U labuser -d labdb -v ON_ERROR_STOP=1 \
-  < apps/three-tier-api/migrations/0001_incidents.sql
-docker compose -f apps/three-tier-api/compose.integration.yaml exec -T postgres \
-  psql -U labuser -d labdb -v ON_ERROR_STOP=1 \
-  < apps/three-tier-api/migrations/0002_security_events.sql
-docker compose -f apps/three-tier-api/compose.integration.yaml up -d --build api
-
-# Writes only deliberately fictional incidents/events to loopback:
-python3 scripts/seed-labops-demo.py --run
+LABOPS_ENV="$HOME/.config/labops-demo/compose.env"
+docker compose --env-file "$LABOPS_ENV" \
+  -f apps/three-tier-api/compose.integration.yaml down
 ~~~
 
-Open the exact /dashboard?incident=... URL printed by the seeder, or
-http://127.0.0.1:18080/dashboard. The first API launch may need a few seconds
-to become ready. The seed script rejects non-loopback targets and requires an
-explicit --run. Re-running it adds more synthetic incidents by design. The
-dashboard also supports creating and triaging incidents without the seeder.
-
-**Stop and delete only the isolated local demo** (including its disposable
-PostgreSQL volume):
-
-~~~bash
-docker compose -f apps/three-tier-api/compose.integration.yaml down -v
-~~~
-
-Do not run this cleanup command against an unrelated Docker Compose project.
-The PostgreSQL volume here is ephemeral; Terraform destroy likewise deletes
-the disposable AWS database. Long-lived independent backups are not implemented.
+Use `down -v` only when you explicitly want to delete this isolated local
+demo's PostgreSQL data. The optional seeder adds records each time it is
+run, so run it once unless additional fictional cases are intended.
+A Terraform destroy also deletes the disposable AWS database. Independent
+long-lived application backups are not implemented.
 
 ### Browser regression evidence
 
