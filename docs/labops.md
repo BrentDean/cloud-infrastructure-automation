@@ -270,3 +270,36 @@ continues to mean operational health rather than threat severity. The footer
 identifies it as **A LaunchShell project**. No shared CSS dependency, extra
 AWS resources, cross-project deployment coupling, external fonts, or new
 third-party browser requests are introduced.
+
+
+## Attach synthetic evidence from the browser (PR #7)
+
+Choose an incident, select **Attach event** in the recent security events panel,
+and enter a reserved documentation source IP plus a synthetic attempted
+username. The dialog explains the supported Cowrie event type, fixes an
+observation time, and creates a per-entry `manual-ui-...` idempotency key.
+Its source address entry is restricted to the IPv4 documentation networks
+`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, or the IPv6
+documentation range `2001:db8::/32`; the Flask API and PostgreSQL continue
+to validate the actual address. The UI never collects a password, raw JSON
+log, hostname or personal details.
+
+Submitting calls the existing `POST /api/v1/incidents/{uuid}/events` endpoint.
+Success closes the modal and refreshes the selected incident's real event
+table and read-only failed-login investigation, **without a page reload**.
+On a 503 or lost response, the dialog retains the exact event ID, input,
+and observed time so retrying can return the original stored event without
+creating a duplicate. Editing the inputs deliberately prepares a new event
+identity. Switching cases cannot redirect a pending form submission to a
+different incident.
+
+This closes the first end-to-end analyst browser path:
+create incident → triage → add a synthetic evidence event → investigate →
+reload and confirm PostgreSQL durability. Chromium explicitly tests rejected
+non-documentation IPs, a simulated 503 and retry with the *same POST payload*,
+real PostgreSQL persistence, browser refresh, and mobile layout. The
+`desktop-event-intake.png` preview is included in the CI screenshot artifact.
+
+**Boundary:** This is synthetic manual evidence entry; it is not ingestion
+from a live honeypot, autonomous correlation or threat response. Authentication
+and TLS are necessary before external exposure or real-event intake.
