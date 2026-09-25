@@ -8,6 +8,7 @@
     selectedId: null,
     selectionVersion: 0,
     analysisVersion: 0,
+    pendingEvent: null,
     loading: false,
   };
   const statuses = new Set(["open", "investigating", "resolved"]);
@@ -141,6 +142,8 @@
     show("investigation-empty", true);
     show("investigation-result", false);
     byId("event-count").textContent = "—";
+    byId("new-event-button").disabled = true;
+    show("event-action-message", false);
     const cell = node("td", "table-empty", "Select an incident to view associated events.");
     cell.colSpan = 4;
     const row = node("tr");
@@ -169,6 +172,8 @@
     const incident = state.incidents.find((item) => item.id === id);
     displayDetail(incident || null);
     if (!incident) return;
+    byId("new-event-button").disabled = false;
+    show("event-action-message", false);
     byId("event-count").textContent = "…";
     const cell = node("td", "table-empty", "Loading associated events…");
     cell.colSpan = 4;
@@ -404,6 +409,101 @@
     }
   }
 
+  function documentationIp(value) {
+    const address = value.trim();
+    const v4 = /^(192\.0\.2|198\.51\.100|203\.0\.113)\.(\d{1,3})$/.exec(address);
+    if (v4) return Number(v4[2]) <= 255;
+    // PostgreSQL/the API performs final IPv6 validation; only the RFC 3849
+    // documentation prefix is accepted from this synthetic browser workflow.
+    return /^2001:db8:/i.test(address) && address.length <= 45;
+  }
+
+  function newEventIdentity() {
+    // crypto.randomUUID is not exposed on every HTTP origin (including the
+    // operator /32 AWS lab). Use a nonsecret, per-form idempotency key there.
+    const suffix = window.crypto && typeof window.crypto.randomUUID === "function"
+      ? window.crypto.randomUUID()
+      : Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+    return {
+      source_event_id: "manual-ui-" + suffix,
+      observed_at: new Date().toISOString(),
+    };
+  }
+
+  function prepareEvent() {
+    state.pendingEvent = newEventIdentity();
+    byId("new-event-observed").textContent = formatTime(state.pendingEvent.observed_at);
+    show("event-create-error", false);
+  }
+
+  function eventDialog(open) {
+    const modal = byId("event-dialog");
+    if (open) {
+      const incident = state.incidents.find((item) => item.id === state.selectedId);
+      if (!incident) return;
+      byId("event-form").reset();
+      byId("event-incident-title").textContent = incident.title;
+      prepareEvent();
+      modal.showModal();
+      byId("new-event-ip").focus();
+    } else {
+      modal.close();
+      state.pendingEvent = null;
+    }
+  }
+
+  async function attachEvent(event) {
+    event.preventDefault();
+    const id = state.selectedId;
+    if (!id || !state.pendingEvent) return;
+    const version = state.selectionVersion;
+    const ip = byId("new-event-ip").value.trim();
+    const username = byId("new-event-username").value.trim();
+    if (!documentationIp(ip)) {
+      byId("event-create-error").textContent =
+        "Use a reserved documentation IP such as 198.51.100.23; never a real address.";
+      show("event-create-error", true);
+      return;
+    }
+    if (!username || username.length > 128) {
+      byId("event-create-error").textContent = "Enter an attempted username (1–128 characters).";
+      show("event-create-error", true);
+      return;
+    }
+    const payload = {
+      source: "cowrie",
+      event_type: "cowrie.login.failed",
+      ...state.pendingEvent,
+      source_ip: ip,
+      username,
+    };
+    const button = byId("submit-event");
+    button.disabled = true;
+    show("event-create-error", false);
+    try {
+      await request(route + "/" + encodeURIComponent(id) + "/events", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      eventDialog(false);
+      if (version !== state.selectionVersion || id !== state.selectedId) return;
+      byId("event-action-message").textContent =
+        "Synthetic SSH evidence saved. Event history and read-only analysis refreshed.";
+      byId("event-action-message").dataset.state = "success";
+      show("event-action-message", true);
+      await Promise.all([loadEvents(id, version), runInvestigation(id, version)]);
+    } catch (error) {
+      // Keep the exact event ID and UTC time on retries. If the response was
+      // lost after commit, PostgreSQL returns the existing event rather than
+      // inserting a duplicate.
+      byId("event-create-error").textContent = errorMessage(error) + " You can retry this entry.";
+      show("event-create-error", true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   function dialog(open) {
     const modal = byId("create-dialog");
     if (open) {
@@ -413,6 +513,17 @@
     } else modal.close();
   }
 
+  byId("new-event-button").addEventListener("click", () => eventDialog(true));
+  byId("close-event-dialog").addEventListener("click", () => eventDialog(false));
+  byId("cancel-event-create").addEventListener("click", () => eventDialog(false));
+  byId("event-form").addEventListener("submit", attachEvent);
+  for (const id of ["new-event-ip", "new-event-username"]) {
+    byId(id).addEventListener("input", prepareEvent);
+  }
+  byId("event-dialog").addEventListener("click", (event) => {
+    if (event.target === byId("event-dialog")) eventDialog(false);
+  });
+  byId("event-dialog").addEventListener("close", () => { state.pendingEvent = null; });
   byId("new-incident-button").addEventListener("click", () => dialog(true));
   byId("empty-create-button").addEventListener("click", () => dialog(true));
   byId("close-dialog").addEventListener("click", () => dialog(false));

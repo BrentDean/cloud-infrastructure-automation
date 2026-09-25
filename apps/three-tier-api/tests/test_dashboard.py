@@ -32,6 +32,10 @@ def test_dashboard_loads_without_database_credentials(client, monkeypatch):
     assert 'id="source-chart"' in html
     assert 'id="create-dialog"' in html
     assert 'id="event-rows"' in html
+    assert 'id="event-dialog"' in html
+    assert 'id="new-event-button"' in html
+    assert 'id="new-event-ip"' in html
+    assert 'id="new-event-observed"' in html
     assert 'id="count-visible"' in html
     assert '/static/labops/dashboard.css' in html
     assert '/static/labops/dashboard.js' in html
@@ -83,3 +87,14 @@ def test_dashboard_uses_launchshell_dark_palette(client):
     assert "--sidebar: #061226;" in css
     assert ".button-primary { background: var(--brand); color: #ffffff;" in css
     assert '.connection-pill[data-state="online"] .status-dot { background: var(--green);' in css
+
+
+def test_manual_evidence_entry_is_bundled_in_same_origin_js(client):
+    response = client.get("/static/labops/dashboard.js")
+    assert response.status_code == 200
+    javascript = response.get_data(as_text=True)
+    assert 'function documentationIp(value)' in javascript
+    assert 'function newEventIdentity()' in javascript
+    assert 'async function attachEvent(event)' in javascript
+    assert 'source_event_id: "manual-ui-" + suffix' in javascript
+    assert 'await Promise.all([loadEvents(id, version), runInvestigation(id, version)])' in javascript

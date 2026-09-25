@@ -99,8 +99,56 @@ with sync_playwright() as playwright:
     expect(page.locator("#triage-message")).to_have_text("Saved to PostgreSQL")
     expect(page.locator("#count-investigating")).to_have_text("3")
 
+    # Intake is now a real browser workflow, not exclusively a curl/API exercise.
+    expect(page.locator("#new-event-button")).to_be_enabled()
+    page.locator("#new-event-button").click()
+    expect(page.locator("#event-dialog")).to_be_visible()
+    expect(page.locator("#event-incident-title")).to_have_text(
+        "Synthetic repeated SSH login failures"
+    )
+    page.locator("#new-event-ip").fill("8.8.8.8")
+    page.locator("#new-event-username").fill("root")
+    page.locator("#submit-event").click()
+    expect(page.locator("#event-create-error")).to_contain_text("reserved documentation IP")
+
+    page.locator("#new-event-ip").fill("198.51.100.23")
+    expect(page.locator("#event-create-error")).not_to_be_visible()
+    page.screenshot(path=str(ARTIFACTS / "desktop-event-intake.png"), full_page=False)
+
+    # A failed browser request must leave the modal, immutable idempotency key
+    # and observed timestamp intact so a retry cannot create a duplicate.
+    post_target = re.compile(r"/api/v1/incidents/[0-9a-f-]+/events$")
+    attempts = []
+
+    def simulated_outage(route):
+        attempts.append(route.request.post_data_json)
+        route.fulfill(
+            status=503,
+            content_type="application/json",
+            body='{"error":{"code":"database_unavailable","message":"Incident storage is unavailable"}}',
+        )
+
+    page.route(post_target, simulated_outage)
+    first_observed = page.locator("#new-event-observed").inner_text()
+    page.locator("#submit-event").click()
+    expect(page.locator("#event-create-error")).to_contain_text("retry")
+    expect(page.locator("#event-dialog")).to_be_visible()
+    expect(page.locator("#new-event-observed")).to_have_text(first_observed)
+    assert len(attempts) == 1
+    page.unroute(post_target)
+    with page.expect_request(
+        lambda req: re.search(post_target, req.url) and req.method == "POST"
+    ) as actual_request:
+        page.locator("#submit-event").click()
+    assert actual_request.value.post_data_json == attempts[0]
+    assert attempts[0]["source_event_id"].startswith("manual-ui-")
+    expect(page.locator("#event-dialog")).not_to_be_visible()
+    expect(page.locator("#event-action-message")).to_contain_text("saved")
+    expect(page.locator("#event-count")).to_have_text("1")
+    expect(page.locator("#analysis-attempts")).to_have_text("1")
+
     observed = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
-    for number in range(5):
+    for number in range(1, 5):
         post_json(API + "/" + selected + "/events", {
             "source": "cowrie",
             "event_type": "cowrie.login.failed",
@@ -164,5 +212,5 @@ with sync_playwright() as playwright:
     context.close()
     browser.close()
 
-print("PASS: real Chromium UI create/triage/event investigation, persisted reload, "
+print("PASS: Chromium UI incident triage, synthetic event intake/retry, investigation, persisted reload, "
       "503/recovery, mobile layout; synthetic screenshots saved to artifacts/dashboard")
