@@ -21,8 +21,8 @@ a { color: inherit; text-decoration: none; }
 ::selection { background: #245db6; color: white; }
 .hidden { display: none !important; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-.skip-link { position: fixed; z-index: 100; left: 16px; top: -100px; background: var(--brand); color: #fff; padding: 13px 18px; border-radius: 8px; font-weight: 750; }
-.skip-link:focus { top: 14px; }
+.skip-link { position: fixed; z-index: 100; left: 16px; top: -100px; visibility: hidden; background: var(--brand); color: #fff; padding: 13px 18px; border-radius: 8px; font-weight: 750; }
+.skip-link:focus-visible { top: 14px; visibility: visible; }
 
 .app-shell { display: grid; grid-template-columns: 242px minmax(0, 1fr); min-height: 100vh; }
 .sidebar { background: var(--sidebar); border-right: 1px solid var(--stroke-soft); padding: 30px 18px 22px; min-height: 100vh; position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; }
