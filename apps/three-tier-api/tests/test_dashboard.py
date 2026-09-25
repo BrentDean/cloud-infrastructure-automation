@@ -27,6 +27,7 @@ def test_dashboard_loads_without_database_credentials(client, monkeypatch):
     assert response.mimetype == "text/html"
     html = response.get_data(as_text=True)
     assert "LabOps" in html
+    assert "A LaunchShell project" in html
     assert 'id="incident-list"' in html
     assert 'id="source-chart"' in html
     assert 'id="create-dialog"' in html
@@ -71,3 +72,14 @@ def test_static_assets_are_served_locally(client, asset, expected_type, needle):
 
 def test_root_is_not_exposed_as_browser_app(client):
     assert client.get("/").status_code == 404
+
+
+def test_dashboard_uses_launchshell_dark_palette(client):
+    response = client.get("/static/labops/dashboard.css")
+    assert response.status_code == 200
+    css = response.get_data(as_text=True)
+    assert "--brand: #1263ff;" in css
+    assert "--green: #12c995;" in css
+    assert "--sidebar: #061226;" in css
+    assert ".button-primary { background: var(--brand); color: #ffffff;" in css
+    assert '.connection-pill[data-state="online"] .status-dot { background: var(--green);' in css

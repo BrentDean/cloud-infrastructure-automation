@@ -65,6 +65,13 @@ with sync_playwright() as playwright:
     page.goto(BASE + "/dashboard", wait_until="networkidle", timeout=30000)
     expect(page).to_have_title("LabOps · Security operations")
     expect(page.locator("#connection-pill")).to_have_attribute("data-state", "online")
+    assert page.locator("#new-incident-button").evaluate(
+        "(el) => getComputedStyle(el).backgroundColor"
+    ) == "rgb(18, 99, 255)"
+    assert page.locator(".connection-pill .status-dot").evaluate(
+        "(el) => getComputedStyle(el).backgroundColor"
+    ) == "rgb(18, 201, 149)"
+    expect(page.locator(".footer-brand")).to_have_text("A LaunchShell project")
     expect(page.locator("#count-visible")).to_have_text("4")
     expect(page.locator("#incident-list .incident-row")).to_have_count(4)
     expect(page.locator("#case-title")).not_to_be_empty()

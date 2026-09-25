@@ -259,3 +259,14 @@ investigation, degraded state, and mobile layout are uploaded as the
 These local browser screenshots are **not** evidence that the updated
 LabOps dashboard was live-deployed on AWS. The historical September 22/24
 infrastructure screenshots remain separate and are labeled as such.
+
+### LaunchShell Dark design system
+
+LabOps uses LaunchShell's public palette without copying the light marketing
+site: primary action blue `#1263ff`, healthy-state green `#12c995`, and
+dark navy `#061226`. The dashboard retains dark, operator-focused surfaces;
+incident severity and threshold signals remain amber/red, while green
+continues to mean operational health rather than threat severity. The footer
+identifies it as **A LaunchShell project**. No shared CSS dependency, extra
+AWS resources, cross-project deployment coupling, external fonts, or new
+third-party browser requests are introduced.

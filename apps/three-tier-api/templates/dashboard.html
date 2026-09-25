@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0b1220">
+  <meta name="theme-color" content="#061226">
   <meta name="description" content="LabOps — a PostgreSQL-backed security operations workspace for a disposable AWS infrastructure lab.">
   <title>LabOps · Security operations</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='labops/dashboard.css') }}">
@@ -101,7 +101,7 @@
 
         <section class="panel events-panel" aria-labelledby="events-title"><div class="panel-header"><div><span class="panel-kicker">EVIDENCE / 04</span><h2 id="events-title">Recent security events</h2><p>Sanitized Cowrie authentication failures linked to the selected incident.</p></div><span id="event-count" class="heading-count">—</span></div><div class="table-scroll"><table><thead><tr><th scope="col">SOURCE IP</th><th scope="col">USERNAME</th><th scope="col">EVENT</th><th scope="col">OBSERVED (LOCAL)</th></tr></thead><tbody id="event-rows"><tr><td colspan="4" class="table-empty">Select an incident to view associated events.</td></tr></tbody></table></div><div class="panel-footer">Up to 100 latest events · Manual incident association</div></section>
 
-        <footer class="main-footer"><span>LabOps <span class="footer-separator">/</span> built on Flask, PostgreSQL &amp; AWS infrastructure</span><span>DISPOSABLE LAB · SYNTHETIC DATA ONLY</span></footer>
+        <footer class="main-footer"><span><span class="footer-brand">A LaunchShell project</span> <span class="footer-separator">/</span> LabOps · Flask, PostgreSQL &amp; AWS infrastructure</span><span>DISPOSABLE LAB · SYNTHETIC DATA ONLY</span></footer>
       </div>
     </main>
   </div>
