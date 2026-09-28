@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: labdb
+      POSTGRES_USER: labuser
+      POSTGRES_PASSWORD: ${LAB_DB_PASSWORD:?Set LAB_DB_PASSWORD for integration tests}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U labuser -d labdb"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+    environment:
+      PGHOST: postgres
+      PGDATABASE: labdb
+      PGUSER: labuser
+      PGPASSWORD: ${LAB_DB_PASSWORD:?Set LAB_DB_PASSWORD for integration tests}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${API_TEST_PORT:-18080}:8000"
+
+volumes:
+  pgdata:

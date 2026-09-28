@@ -1,0 +1,37 @@
+# Machine-specific inventory
+ansible/inventory.ini
+
+# Secrets
+.env
+*.secret
+*.vault-password
+
+# Terraform
+.terraform/
+*.tfvars
+*.tfstate
+*.tfstate.*
+*.tfplan
+
+# Ansible
+*.retry
+# AWS disposable Terraform lab
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+**/terraform.tfvars
+**/terraform.tfvars.json
+**/*.auto.tfvars
+**/*.auto.tfvars.json
+.lab-runs/
+brent-admin_credentials.csv
+**/id_ed25519
+**/*.pem
+
+# Local scratch work (repository root)
+/scratch/
+
+# Synthetic browser screenshot artifacts from CI/local Playwright
+/artifacts/dashboard/
+ansible/inventory.ini.pre-public-ssh.bak

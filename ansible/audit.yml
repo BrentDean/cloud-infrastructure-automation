@@ -1,0 +1,75 @@
+---
+- name: Audit staging VPS
+  hosts: staging
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Report operating system and resources
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ ansible_facts['hostname'] }}"
+          - "OS: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}"
+          - "Python: {{ ansible_facts['python_version'] }}"
+          - "CPU cores: {{ ansible_facts['processor_vcpus'] }}"
+          - "RAM: {{ ansible_facts['memtotal_mb'] }} MB"
+
+    - name: Inspect current infrastructure
+      ansible.builtin.command:
+        argv: "{{ item }}"
+      loop:
+        - ["df", "-h"]
+        - ["free", "-h"]
+        - ["ss", "-lntup"]
+        - ["ufw", "status", "verbose"]
+        - ["docker", "compose", "version"]
+        - ["systemctl", "list-units", "--type=service", "--state=running", "--no-pager", "--plain"]
+        - ["apache2ctl", "-S"]
+      register: audit_checks
+      changed_when: false
+      failed_when: false
+
+    - name: Report infrastructure inspection results
+      ansible.builtin.debug:
+        msg: |
+          $ {{ item.item | join(' ') }}
+          Exit code: {{ item.rc }}
+          {{ item.stdout }}
+          {{ item.stderr }}
+      loop: "{{ audit_checks.results }}"
+      loop_control:
+        label: "{{ item.item | join(' ') }}"
+
+    - name: Inspect rootless Docker containers
+      become: false
+      ansible.builtin.command:
+        argv:
+          - docker
+          - --context
+          - rootless
+          - ps
+          - --all
+      register: rootless_docker
+      changed_when: false
+
+    - name: Report rootless Docker containers
+      ansible.builtin.debug:
+        var: rootless_docker.stdout_lines
+
+    - name: Inspect TorKit Git working tree
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - /home/hetz-1/src/torkit
+          - status
+          - --short
+          - --branch
+      become: false
+      register: torkit_git
+      changed_when: false
+      failed_when: false
+
+    - name: Report TorKit Git status
+      ansible.builtin.debug:
+        var: torkit_git.stdout_lines
