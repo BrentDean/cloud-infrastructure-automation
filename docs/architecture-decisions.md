@@ -1,17 +1,20 @@
 # Architecture decisions: one coherent, disposable AWS portfolio lab
 
-Status: September 24, 2026. Both systemd and optional k3s modes have passed
-separate live AWS tests. This record explains the implementation and its limits;
-see the [September 24 k3s verification record](live-verification-2026-09-24.md).
+Status: October 6, 2026. The September 2026 systemd and k3s variants passed
+separate live AWS tests on the earlier three-host topology. The current design
+adds a dedicated private broker and is CI/static-validated but has **not yet**
+been re-run live in AWS. See the historical
+[September 24 k3s verification record](live-verification-2026-09-24.md).
 
 ## 1. Reuse one three-tier AWS topology
 
-The original Terraform module already provisions a VPC, IGW, NAT, three
-subnets, three EC2 instances, security-group boundaries and operator-restricted
-access. The optional k3s mode *reuses the same root, runner, credential
-generation, SSH bastion and teardown*. It does not need another public server
-or a second cloud provider. This yields a traceable before/after architecture:
-`systemd` is the unchanged default; `k3s` changes only the private app tier.
+The original Terraform module provisioned a VPC, IGW, NAT and three
+web/app/DB EC2 roles. The current module retains the same root, runner,
+credential generation, SSH bastion and teardown while adding one **private
+broker subnet and EC2 role** for NATS JetStream and the Go consumer. The broker
+has no public IP and does not create another public entry point or provider.
+The application runtime choice remains independent: `systemd` is the default;
+`k3s` changes only the private app tier.
 
 The VPC is single-AZ and ephemeral. This explicitly favors bounded cloud
 spend and reproducibility over high availability. Infrastructure destroys
@@ -31,7 +34,20 @@ app server; operator kubectl access goes through the existing SSH bastion.
 The AWS SG admits app NodePort 30080 only from the web SG, never from
 the public Internet.
 
-## 3. Preserve PostgreSQL on the dedicated database tier
+## 3. Separate messaging from the application host
+
+Core messaging is isolated on a dedicated broker EC2 rather than sharing the
+application node. The app security group is the only source admitted to NATS
+TCP 4222. The Go consumer runs beside NATS on the broker and reaches
+PostgreSQL over TCP 5432 through a broker-specific SG rule. NATS monitoring
+binds to loopback, and the web tier has no NATS path.
+
+This creates a clearer failure/security boundary and lets the same broker serve
+either systemd Flask or k3s Pods without coupling broker lifecycle to the app
+runtime. The cost is one additional small private EC2/root volume per live lab
+run. The design remains single-AZ and intentionally does not claim broker HA.
+
+## 4. Preserve PostgreSQL on the dedicated database tier
 
 Moving PostgreSQL into a Pod on the app EC2 would eliminate the project's
 independent DB tier. Instead, Kubernetes receives the private DB EC2 IP
@@ -46,11 +62,14 @@ volume and is not an off-EC2 backup. Destroying this lab also deletes the
 PostgreSQL EC2's root EBS; measuring independent backup and restore is a
 later milestone.
 
-## 4. Keep safety constraints consistent at every layer
+## 5. Keep safety constraints consistent at every layer
 
 - AWS runner chooses `LAB_APP_RUNTIME`; Terraform sizes the app instance
   and selects TCP 8000 or 30080, while Ansible configures Nginx and smoke
   tests to use the matching backend port.
+- Terraform and Ansible agree on a fourth `broker` role. The runner inventories
+  it through the web bastion; application code receives its private NATS
+  endpoint at runtime rather than through a committed credential file.
 - The legacy systemd app Ansible play has a dedicated tag; skipping it does
   not skip dedicated database or public Nginx configuration.
 - Static CI checks Terraform, Ansible, Kubernetes manifest structure and
@@ -62,7 +81,7 @@ later milestone.
 - The TorKit staging VPS and backup automation remain separate: the AWS
   runner does not connect to or mutate the staging node.
 
-## 5. Make test claims match observed evidence
+## 6. Make test claims match observed evidence
 
 Keep original AWS systemd deployment results and timestamps separate from
 new k3s results. The September 24 live AWS run demonstrated node readiness, two Flask replicas,
@@ -71,7 +90,9 @@ EC2, PVC marker survival across evidence Pod recreation, and successful
 cleanup of 28 Terraform resources. The database host uses encrypted EBS;
 this is not an independent, off-instance database backup.
 
-The next connected milestones should extend the **same topology and
-evidence workflow**: Kubernetes rollout/failure recovery; least-privilege
-IAM, CloudWatch and alarm/incident exercise; independent PostgreSQL backup
-followed by intentional teardown, fresh apply and measured recovery.
+The next live milestone is one end-to-end AWS run of the **current four-host
+topology**, capturing Terraform apply/destroy, broker service health,
+app→broker and broker→DB paths, denied web→broker access, messaging delivery
+and second-pass Ansible idempotency. After that, connected milestones can add
+Kubernetes rollout/failure recovery; least-privilege IAM/CloudWatch; and an
+independent PostgreSQL backup/rebuild exercise.

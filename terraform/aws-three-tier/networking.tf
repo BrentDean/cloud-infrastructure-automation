@@ -5,9 +5,10 @@ data "aws_availability_zones" "available" {
 locals {
   availability_zone = data.aws_availability_zones.available.names[0]
   role_cidrs = {
-    web = "10.20.1.0/24"
-    app = "10.20.2.0/24"
-    db  = "10.20.3.0/24"
+    web    = "10.20.1.0/24"
+    app    = "10.20.2.0/24"
+    db     = "10.20.3.0/24"
+    broker = "10.20.4.0/24"
   }
 }
 
@@ -68,7 +69,7 @@ resource "aws_route_table_association" "public" {
 }
 
 resource "aws_route_table_association" "private" {
-  for_each       = toset(["app", "db"])
+  for_each       = toset(["app", "broker", "db"])
   subnet_id      = aws_subnet.role[each.key].id
   route_table_id = aws_route_table.private.id
 }
@@ -85,9 +86,15 @@ resource "aws_security_group" "app" {
   vpc_id      = aws_vpc.lab.id
   tags        = { Name = "lab-app-${var.run_id}" }
 }
+resource "aws_security_group" "broker" {
+  name_prefix = "lab-broker-${var.run_id}-"
+  description = "SSH from web, NATS client traffic only from app SG"
+  vpc_id      = aws_vpc.lab.id
+  tags        = { Name = "lab-broker-${var.run_id}" }
+}
 resource "aws_security_group" "db" {
   name_prefix = "lab-db-${var.run_id}-"
-  description = "SSH from web, PostgreSQL only from app SG"
+  description = "SSH from web, PostgreSQL only from app and broker SGs"
   vpc_id      = aws_vpc.lab.id
   tags        = { Name = "lab-db-${var.run_id}" }
 }
@@ -107,7 +114,11 @@ resource "aws_vpc_security_group_ingress_rule" "web_http" {
   to_port           = 80
 }
 resource "aws_vpc_security_group_ingress_rule" "private_ssh" {
-  for_each                     = { app = aws_security_group.app.id, db = aws_security_group.db.id }
+  for_each = {
+    app    = aws_security_group.app.id
+    broker = aws_security_group.broker.id
+    db     = aws_security_group.db.id
+  }
   security_group_id            = each.value
   referenced_security_group_id = aws_security_group.web.id
   ip_protocol                  = "tcp"
@@ -121,6 +132,13 @@ resource "aws_vpc_security_group_ingress_rule" "app_http" {
   from_port                    = var.app_runtime == "k3s" ? 30080 : 8000
   to_port                      = var.app_runtime == "k3s" ? 30080 : 8000
 }
+resource "aws_vpc_security_group_ingress_rule" "broker_nats" {
+  security_group_id            = aws_security_group.broker.id
+  referenced_security_group_id = aws_security_group.app.id
+  ip_protocol                  = "tcp"
+  from_port                    = 4222
+  to_port                      = 4222
+}
 resource "aws_vpc_security_group_ingress_rule" "db_postgres" {
   security_group_id            = aws_security_group.db.id
   referenced_security_group_id = aws_security_group.app.id
@@ -128,8 +146,20 @@ resource "aws_vpc_security_group_ingress_rule" "db_postgres" {
   from_port                    = 5432
   to_port                      = 5432
 }
+resource "aws_vpc_security_group_ingress_rule" "db_postgres_broker" {
+  security_group_id            = aws_security_group.db.id
+  referenced_security_group_id = aws_security_group.broker.id
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+}
 resource "aws_vpc_security_group_egress_rule" "outbound" {
-  for_each          = { web = aws_security_group.web.id, app = aws_security_group.app.id, db = aws_security_group.db.id }
+  for_each = {
+    web    = aws_security_group.web.id
+    app    = aws_security_group.app.id
+    broker = aws_security_group.broker.id
+    db     = aws_security_group.db.id
+  }
   security_group_id = each.value
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"

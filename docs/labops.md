@@ -367,14 +367,17 @@ renders the JetStream and systemd configuration, deploys the controller-built
 worker, runs the playbook a second time at `changed=0`, publishes a JetStream
 event, and requires its PostgreSQL delivery row.
 
-The existing three-host AWS runner is wired to place these messaging services
-on the **private app EC2** as an interim topology: systemd Flask receives
-`NATS_URL` directly, while k3s Pods receive the same private endpoint through
-a runtime-only ConfigMap. The worker connects to the dedicated PostgreSQL host.
-The web tier has no NATS ingress rule, and the AWS smoke play now includes a
-negative web→4222 check plus a synthetic API→JetStream→worker→PostgreSQL check.
+The current AWS design places these messaging services on a **dedicated private
+broker EC2** in its own `10.20.4.0/24` subnet. Systemd Flask receives the
+broker private address in `NATS_URL`; k3s Pods receive the same endpoint through
+a runtime-only ConfigMap. NATS TCP 4222 is admitted only from the application
+security group. The Go worker runs on the broker and reaches PostgreSQL on 5432
+through a broker-specific database ingress rule. The web tier can reach broker
+SSH only through the bastion security-group path and is explicitly denied NATS.
+
+The AWS smoke play therefore checks app→broker, broker→DB, denied web→broker,
+and a synthetic API→JetStream→worker→PostgreSQL transaction.
 
 This is still **not live AWS evidence for the messaging revision**. The
-September AWS screenshots predate these changes. A dedicated broker EC2,
-broker-specific security group, and a new explicitly recorded live AWS run
-remain future milestones.
+September AWS screenshots predate the broker subnet, broker EC2 and these new
+security-group paths. A new explicitly recorded billable run remains required.

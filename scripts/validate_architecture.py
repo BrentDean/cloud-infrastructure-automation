@@ -53,8 +53,8 @@ def main() -> None:
     require('var.k3s_app_instance_type : var.instance_type' in compute,
             "k3s instance size is not app-tier conditional")
     require('for_each                    = local.instances' in compute,
-            "Original three-role EC2 resource must be retained")
-    for role in ("web", "app", "db"):
+            "Shared role-based EC2 resource must be retained")
+    for role in ("web", "app", "broker", "db"):
         require(re.search(r'^\s*' + role + r'\s*=\s*\{\s*subnet_id', compute, re.MULTILINE)
                 is not None, "AWS EC2 role missing: " + role)
 
@@ -66,16 +66,31 @@ def main() -> None:
                           app_ingress) is not None,
                 "App SG " + field + " must choose NodePort 30080 / legacy 8000")
 
+    broker_ingress = resource("broker_nats", networking)
+    require('referenced_security_group_id = aws_security_group.app.id' in broker_ingress,
+            "NATS ingress must come only from the app security group")
+    require(re.search(r'from_port\s*= 4222', broker_ingress) is not None,
+            "Broker ingress should be restricted to NATS TCP 4222")
+
     db_ingress = resource("db_postgres", networking)
     require('referenced_security_group_id = aws_security_group.app.id' in db_ingress,
-            "Database SG must admit only app-tier security group")
-    require(re.search(r'from_port\s*= 5432', db_ingress) is not None,
-            "DB ingress should be restricted to PostgreSQL TCP 5432")
+            "Database SG must retain application-tier PostgreSQL access")
+    db_broker_ingress = resource("db_postgres_broker", networking)
+    require('referenced_security_group_id = aws_security_group.broker.id' in db_broker_ingress,
+            "Database SG must admit the event worker only from broker SG")
+    require(re.search(r'from_port\s*= 5432', db_ingress) is not None
+            and re.search(r'from_port\s*= 5432', db_broker_ingress) is not None,
+            "DB ingress should stay restricted to PostgreSQL TCP 5432")
+
+    require('broker = "10.20.4.0/24"' in networking,
+            "Broker must have a distinct private subnet")
+    require('toset(["app", "broker", "db"])' in networking,
+            "All private role subnets must use the private NAT route table")
 
     plays = yaml.safe_load(playbook)
     require(len(plays) == 4, "DB, messaging, systemd app, and web plays are expected")
-    require([p["hosts"] for p in plays] == ["db", "app", "app", "web"],
-            "Database, private messaging/app, and public web Ansible targets must remain")
+    require([p["hosts"] for p in plays] == ["db", "broker", "app", "web"],
+            "Database, broker, private app, and public web Ansible targets must remain")
     require(plays[1].get("tags") == ["messaging"],
             "Messaging services must remain independent from the systemd app runtime")
     role_names = [r if isinstance(r, str) else r.get("role") for r in plays[1]["roles"]]
@@ -103,8 +118,11 @@ def main() -> None:
             "Both AWS app runtimes require shared LabOps schema and Python module")
     require("0002_security_events.sql" in playbook and "0003_event_deliveries.sql" in playbook,
             "LabOps event and delivery schemas must be migrated on PostgreSQL")
-    require("events.py" in playbook and "NATS_URL=nats://" in playbook,
-            "systemd Flask runtime must receive the JetStream publisher and endpoint")
+    require("events.py" in playbook
+            and "NATS_URL=nats://{{ hostvars['broker'].lab_private_ip }}:4222" in playbook,
+            "systemd Flask runtime must publish to the dedicated broker")
+    require("hostvars['broker'].lab_private_ip" in smoke,
+            "Smoke tests must exercise and deny the dedicated broker path")
     require("lab_app_port | default(8000) | int" in smoke,
             "Smoke test must select the same backend port as Nginx")
 
@@ -138,9 +156,15 @@ def main() -> None:
     require('scripts/build-event-worker.sh' in runner
             and 'LAB_EVENT_WORKER_BINARY' in runner,
             "AWS runner must build the Go worker before provisioning")
+    require('broker_private_ip' in runner
+            and 'aws-lab-broker' in runner
+            and '[lab_broker]' in runner,
+            "Runner must inventory and reach the dedicated private broker")
     require('scripts/k3s/aws-deploy.sh' in runner
             and 'scripts/k3s/aws-verify.sh' in runner,
             "AWS runner must invoke real k3s installation and verification")
+    require('BROKER_IP' in deploy and 'nats://$BROKER_IP:4222' in deploy,
+            "k3s runtime must receive the dedicated broker endpoint")
     require('trap cleanup EXIT' in runner
             and 'terraform -chdir="$WORK/terraform" destroy' in runner,
             "Runner must retain best-effort Terraform teardown on all outcomes")
@@ -155,8 +179,8 @@ def main() -> None:
     require(not (ROOT / "kubernetes/k3s/postgres.yaml").exists(),
             "PostgreSQL must remain on dedicated EC2, not in Kubernetes")
 
-    print("PASS: three AWS tiers, Ansible messaging roles, optional private k3s app,")
-    print("      runtime credentials/endpoints, single AWS runner, teardown, and no Hetzner k3s")
+    print("PASS: web/app/broker/DB AWS roles, broker-only NATS ingress, app/broker DB paths,")
+    print("      optional private k3s app, runtime endpoints, teardown, and no Hetzner k3s")
 
 
 if __name__ == "__main__":

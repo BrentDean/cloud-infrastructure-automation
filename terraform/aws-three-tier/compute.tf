@@ -19,9 +19,10 @@ resource "aws_key_pair" "lab" {
 
 locals {
   instances = {
-    web = { subnet_id = aws_subnet.role["web"].id, sg_id = aws_security_group.web.id, public_ip = true }
-    app = { subnet_id = aws_subnet.role["app"].id, sg_id = aws_security_group.app.id, public_ip = false }
-    db  = { subnet_id = aws_subnet.role["db"].id, sg_id = aws_security_group.db.id, public_ip = false }
+    web    = { subnet_id = aws_subnet.role["web"].id, sg_id = aws_security_group.web.id, public_ip = true }
+    app    = { subnet_id = aws_subnet.role["app"].id, sg_id = aws_security_group.app.id, public_ip = false }
+    broker = { subnet_id = aws_subnet.role["broker"].id, sg_id = aws_security_group.broker.id, public_ip = false }
+    db     = { subnet_id = aws_subnet.role["db"].id, sg_id = aws_security_group.db.id, public_ip = false }
   }
 }
 
@@ -48,7 +49,11 @@ resource "aws_instance" "role" {
     encrypted             = true
     delete_on_termination = true
   }
-  tags = { Name = "lab-${each.key}-${var.run_id}", Tier = each.key, Runtime = each.key == "app" ? var.app_runtime : "native" }
+  tags = {
+    Name    = "lab-${each.key}-${var.run_id}"
+    Tier    = each.key
+    Runtime = each.key == "app" ? var.app_runtime : "native"
+  }
   depends_on = [
     aws_route_table_association.public,
     aws_route_table_association.private,

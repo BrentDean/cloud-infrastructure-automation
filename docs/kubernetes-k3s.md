@@ -10,10 +10,12 @@ The original systemd/Gunicorn variant was separately verified on September 22.
 ## Architecture
 
 Use the original `terraform/aws-three-tier` root and
-`scripts/run-aws-three-tier.sh`, not a fourth VM or a second provider.
-The default `LAB_APP_RUNTIME=systemd` preserves the existing application
-delivery. Set `LAB_APP_RUNTIME=k3s` to switch *only* the private application
-tier; the original PostgreSQL database and Nginx bastion tiers remain intact.
+`scripts/run-aws-three-tier.sh`. The current revision adds a **dedicated
+private broker EC2** to the existing web/app/DB design; it does not add a
+second provider or public service. The default `LAB_APP_RUNTIME=systemd`
+preserves the application delivery. Set `LAB_APP_RUNTIME=k3s` to switch only
+the private application tier; PostgreSQL, broker and Nginx/bastion remain
+dedicated EC2 roles.
 
 ```text
 Workstation /32 -> web EC2 (public subnet)
@@ -22,25 +24,25 @@ Workstation /32 -> web EC2 (public subnet)
                     TCP 30080, web SG only
                          v
                     app EC2 (private subnet; t3.medium default)
-                    ├─ NATS JetStream + Go worker (systemd)
-                    └─ k3s NodePort 30080 -> Flask Service
+                    k3s NodePort 30080 -> Flask Service
                                              |
                                 Flask Deployment, 2 non-root Pods
                                 liveness /healthz, readiness /readyz
-                                NATS_URL -> app private IP:4222
-                                             |
-                            PostgreSQL TCP 5432, app SG only
-                                             v
-                    db EC2 (private subnet): PostgreSQL 16
+                       |                     |
+             TCP 4222, app SG only           | TCP 5432, app SG only
+                       v                     v
+              broker EC2 (private)      db EC2 (private)
+              NATS JetStream            PostgreSQL 16
+              Go event worker ---------> TCP 5432, broker SG only
                     encrypted gp3 root EBS 12 GiB
 ```
 
 The original mode still proxies web -> app:8000 with systemd Gunicorn.
 In k3s mode the AWS security-group rule changes to port 30080; Ansible
 configures Nginx and the smoke test to use that same port, and skips only
-the systemd Flask play. The independent messaging play still manages NATS and
-the Go worker on the app EC2. A runtime-only `messaging-endpoint` ConfigMap
-gives the Flask Pods the private NATS URL. DB-to-app access remains security-group
+the systemd Flask play. The independent messaging play manages NATS and the Go
+worker on the dedicated broker EC2. A runtime-only `messaging-endpoint`
+ConfigMap gives the Flask Pods the broker's private NATS URL. DB-to-app access remains security-group
 restricted, and the web tier cannot connect directly to PostgreSQL.
 
 The k3s Kubernetes API (6443), NodePort (30080), pod network, and
@@ -71,8 +73,9 @@ a fresh SSH key, restricts access to the current public /32, creates
 an isolated private Terraform state, generates a new ephemeral database
 password, and attempts destruction in its EXIT trap.
 
-AWS resources cost money during the run, especially the NAT gateway,
-EIP, three EC2 instances and EBS volumes. NAT gateway provisioning commonly
+AWS resources cost money during a current-revision run, especially the NAT
+gateway, EIP, **four EC2 instances** and their EBS volumes. The September 24
+evidence used the earlier three-instance topology. NAT gateway provisioning commonly
 takes approximately **2–5 minutes** (sometimes longer). Terraform may print
 repeated `aws_nat_gateway.lab: Still creating...` lines during this stage;
 keep the runner open through testing and cleanup. The app instance defaults to
@@ -134,9 +137,9 @@ variant with `docker build --platform linux/amd64`, imports the image
 through the SSH bastion to private k3s containerd, and deploys
 `localhost/three-tier-api:pr2` with `imagePullPolicy: Never`.
 PostgreSQL remains installed through the existing AWS DB playbook.
-Kubernetes gets DB private IP and the app-host NATS URL through runtime
-ConfigMaps and the database password through a runtime Secret, not committed
-endpoint/credential manifests or Terraform state. Secrets encryption at rest
+Kubernetes gets the DB private IP and dedicated broker NATS URL through
+runtime ConfigMaps and the database password through a runtime Secret, not
+committed endpoint/credential manifests or Terraform state. Secrets encryption at rest
 is enabled for the single-node k3s datastore.
 
 Verification asserts two available Flask Pods, a non-root process,
