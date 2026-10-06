@@ -6,3 +6,4 @@
   roles:
     - role: nats
     - role: event_worker
+    - role: monitoring_checks

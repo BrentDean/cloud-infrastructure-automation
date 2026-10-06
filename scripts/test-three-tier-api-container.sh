@@ -83,6 +83,11 @@ wait_for_worker
 curl -fsS --max-time 5 "$BASE_URL/health" |
   python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["status"]=="ok" and d["db_result"]==1'
 
+echo '=== Nagios/Icinga-compatible end-to-end health check ==='
+"$ROOT/monitoring/plugins/check_labops_http.py" \
+  --url "$BASE_URL/health" --warning-ms 2000 --critical-ms 5000
+echo 'PASS: monitoring plugin validated Flask -> PostgreSQL health contract'
+
 echo '=== Operator dashboard HTML, local static assets and security headers ==='
 curl -fsS --max-time 5 "$BASE_URL/dashboard" |
   python3 -c '

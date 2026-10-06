@@ -212,6 +212,7 @@
   roles:
     - role: nats
     - role: event_worker
+    - role: monitoring_checks
 
 - name: Deploy private Python application
   hosts: app
@@ -362,6 +363,10 @@
     - name: Wait for cloud-init to finish
       ansible.builtin.command: cloud-init status --wait
       changed_when: false
+
+    - name: Install Nagios/Icinga-compatible LabOps checks
+      ansible.builtin.include_role:
+        name: monitoring_checks
 
     - name: Install Nginx
       ansible.builtin.apt:

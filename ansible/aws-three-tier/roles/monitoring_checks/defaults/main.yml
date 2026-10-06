@@ -1,0 +1,6 @@
+---
+monitoring_checks_install_dir: "/usr/local/libexec/labops-monitoring"
+monitoring_checks_plugins:
+  - check_labops_nats.py
+  - check_labops_http.py
+  - check_labops_systemd.py
