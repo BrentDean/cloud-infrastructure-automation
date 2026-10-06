@@ -104,6 +104,15 @@ jobs:
               raise SystemExit('Messaging-role idempotency failed')
           print('PASS: second messaging Ansible run changed=0')
           PY
+      - name: Execute Ansible-installed monitoring plugins
+        run: |
+          /usr/local/libexec/labops-monitoring/check_labops_nats.py \
+            --warning-ms 2000 --critical-ms 5000
+          /usr/local/libexec/labops-monitoring/check_labops_systemd.py \
+            --unit nats-server
+          /usr/local/libexec/labops-monitoring/check_labops_systemd.py \
+            --unit labops-event-worker
+          echo 'PASS: installed Nagios/Icinga-compatible broker checks returned OK'
       - name: Publish through deployed JetStream and require worker persistence
         run: |
           python - <<'PY'

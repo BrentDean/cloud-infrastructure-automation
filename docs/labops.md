@@ -381,3 +381,33 @@ and a synthetic API→JetStream→worker→PostgreSQL transaction.
 This is still **not live AWS evidence for the messaging revision**. The
 September AWS screenshots predate the broker subnet, broker EC2 and these new
 security-group paths. A new explicitly recorded billable run remains required.
+
+
+## Nagios/Icinga-compatible operational checks
+
+The repository includes standalone monitoring plugins for the operational
+boundaries exercised by LabOps:
+
+- `check_labops_nats.py` validates the broker-local JetStream health endpoint
+  and reports response latency.
+- `check_labops_systemd.py` validates a local systemd unit such as
+  `nats-server` or `labops-event-worker`.
+- `check_labops_http.py` validates the end-to-end Flask/PostgreSQL `/health`
+  JSON contract and reports response latency.
+
+They use the conventional monitoring-plugin exit codes
+OK/WARNING/CRITICAL/UNKNOWN = 0/1/2/3, stdout status lines and performance
+data. Network checks have internal timeouts and configurable warning/critical
+latency thresholds.
+
+Ansible installs the plugins under
+`/usr/local/libexec/labops-monitoring/`. Non-billable CI executes the
+installed NATS and systemd checks against the real Ansible-created services,
+and the Docker integration suite executes the HTTP plugin against the real
+Flask/PostgreSQL stack.
+
+This demonstrates **custom Nagios/Icinga-compatible check development and
+deployment**, not administration of a Nagios/Icinga server. No scheduler,
+NRPE/agent, notification transport, escalation policy or production monitoring
+daemon is claimed. Example Nagios and Icinga command definitions are documented
+in [`monitoring/README.md`](../monitoring/README.md).

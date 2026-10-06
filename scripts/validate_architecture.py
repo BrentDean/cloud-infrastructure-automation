@@ -94,8 +94,8 @@ def main() -> None:
     require(plays[1].get("tags") == ["messaging"],
             "Messaging services must remain independent from the systemd app runtime")
     role_names = [r if isinstance(r, str) else r.get("role") for r in plays[1]["roles"]]
-    require(role_names == ["nats", "event_worker"],
-            "Messaging play must deploy NATS before the Go event worker")
+    require(role_names == ["nats", "event_worker", "monitoring_checks"],
+            "Messaging play must deploy NATS, the Go worker, and monitoring checks")
     require(plays[2].get("tags") == ["systemd_app"],
             "k3s mode must skip only the original systemd app play")
     proxy = next(t for t in plays[3]["tasks"]
@@ -123,6 +123,9 @@ def main() -> None:
             "systemd Flask runtime must publish to the dedicated broker")
     require("hostvars['broker'].lab_private_ip" in smoke,
             "Smoke tests must exercise and deny the dedicated broker path")
+    for plugin in ("check_labops_nats.py", "check_labops_systemd.py", "check_labops_http.py"):
+        require(plugin in smoke or plugin in playbook,
+                "Monitoring plugin is not wired into Ansible/smoke validation: " + plugin)
     require("lab_app_port | default(8000) | int" in smoke,
             "Smoke test must select the same backend port as Nginx")
 
@@ -180,7 +183,7 @@ def main() -> None:
             "PostgreSQL must remain on dedicated EC2, not in Kubernetes")
 
     print("PASS: web/app/broker/DB AWS roles, broker-only NATS ingress, app/broker DB paths,")
-    print("      optional private k3s app, runtime endpoints, teardown, and no Hetzner k3s")
+    print("      Nagios-compatible checks, k3s runtime endpoints, teardown, and no Hetzner k3s")
 
 
 if __name__ == "__main__":

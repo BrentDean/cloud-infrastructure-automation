@@ -48,6 +48,24 @@
           - labops-event-worker
       changed_when: false
 
+    - name: Run Nagios-compatible JetStream health plugin
+      ansible.builtin.command:
+        argv:
+          - /usr/local/libexec/labops-monitoring/check_labops_nats.py
+          - --warning-ms
+          - '2000'
+          - --critical-ms
+          - '5000'
+      changed_when: false
+
+    - name: Run Nagios-compatible event-worker service plugin
+      ansible.builtin.command:
+        argv:
+          - /usr/local/libexec/labops-monitoring/check_labops_systemd.py
+          - --unit
+          - labops-event-worker
+      changed_when: false
+
 - name: Validate web network boundaries and end-to-end API
   hosts: web
   gather_facts: false
@@ -89,6 +107,18 @@
           - api_health.json.status == 'ok'
           - api_health.json.db == 'connected'
           - api_health.json.db_result == 1
+
+    - name: Run Nagios-compatible end-to-end HTTP plugin
+      ansible.builtin.command:
+        argv:
+          - /usr/local/libexec/labops-monitoring/check_labops_http.py
+          - --url
+          - http://127.0.0.1/health
+          - --warning-ms
+          - '2000'
+          - --critical-ms
+          - '5000'
+      changed_when: false
 
     - name: Create one synthetic incident through Nginx for messaging verification
       ansible.builtin.uri:

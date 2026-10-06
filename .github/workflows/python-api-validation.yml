@@ -27,6 +27,8 @@ jobs:
       - name: Python contract tests
         working-directory: apps/three-tier-api
         run: python -m pytest -q tests
+      - name: Nagios/Icinga-compatible plugin tests
+        run: python -m pytest -q monitoring/tests
       - name: Go event worker tests
         working-directory: services/event-worker
         run: |
