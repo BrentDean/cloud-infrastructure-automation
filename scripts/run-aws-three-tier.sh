@@ -209,6 +209,8 @@ lab_db
 [aws_lab:vars]
 ansible_user=ubuntu
 ansible_python_interpreter=/usr/bin/python3
+lab_allowed_cidr=$ALLOWED_CIDR
+lab_app_runtime=$LAB_APP_RUNTIME
 EOF_INVENTORY
 
 for role in web app broker db; do
@@ -238,6 +240,7 @@ if [[ "$LAB_APP_RUNTIME" == k3s ]]; then
   "$ROOT/scripts/k3s/aws-deploy.sh" "$SSH_CONFIG" "$APP_IP" "$BROKER_IP" "$DB_IP" "$WORK/evidence" \
     | tee "$WORK/evidence/k3s-deploy.log"
 fi
+"$ANSIBLE_PLAYBOOK" "${ANSIBLE_ARGS[@]}" "$ANSIBLE/hardening.yml" | tee "$WORK/evidence/hardening-first.log"
 "$ANSIBLE_PLAYBOOK" "${ANSIBLE_ARGS[@]}" "${CONFIGURE_ARGS[@]}" "$ANSIBLE/configure.yml" | tee "$WORK/evidence/configure-second.log"
 python3 - "$WORK/evidence/configure-second.log" "$LAB_APP_RUNTIME" <<'PY'
 import pathlib, re, sys
@@ -248,7 +251,21 @@ for host in ('web', 'broker', 'db') if sys.argv[2] == 'k3s' else ('web', 'app', 
         raise SystemExit(f'Idempotency verification failed for {host}')
 print('PASS: second configuration run changed=0 on configured EC2 tiers')
 PY
+"$ANSIBLE_PLAYBOOK" "${ANSIBLE_ARGS[@]}" "$ANSIBLE/hardening.yml" | tee "$WORK/evidence/hardening-second.log"
+python3 - "$WORK/evidence/hardening-second.log" <<'PY'
+import pathlib, re, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+for host in ('web', 'app', 'broker', 'db'):
+    pattern = rf'(?m)^\s*{host}\s*:\s*ok=\d+\s+changed=0\s+unreachable=0\s+failed=0\b'
+    if not re.search(pattern, text):
+        raise SystemExit(f'Hardening idempotency verification failed for {host}')
+print('PASS: second Linux hardening run changed=0 on all EC2 tiers')
+PY
 "$ANSIBLE_PLAYBOOK" "${ANSIBLE_ARGS[@]}" "${CONFIGURE_ARGS[@]}" "$ANSIBLE/smoke-test.yml" | tee "$WORK/evidence/smoke-test.log"
+mkdir -p "$WORK/evidence/security"
+"$ANSIBLE_PLAYBOOK" "${ANSIBLE_ARGS[@]}" \
+  -e "lab_evidence_dir=$WORK/evidence/security" \
+  "$ANSIBLE/security-evidence.yml" | tee "$WORK/evidence/security-evidence.log"
 if [[ "$LAB_APP_RUNTIME" == k3s ]]; then
   "$ROOT/scripts/k3s/aws-verify.sh" "$SSH_CONFIG" "$RUN_ID" \
     | tee "$WORK/evidence/k3s-verification.log"
@@ -266,7 +283,7 @@ PY
 
 printf 'RUN_ID=%s\nREGION=%s\nAPP_RUNTIME=%s\nPUBLIC_WEB_IP=%s\nEXPIRES_AT=%s\n' \
   "$RUN_ID" "$AWS_REGION" "$LAB_APP_RUNTIME" "$WEB_IP" "$EXPIRES_AT" > "$WORK/evidence/run-summary.txt"
-echo "PASS: three-tier application plus private broker provisioning, idempotency, connectivity, network restrictions."
+echo "PASS: application/broker provisioning, configuration + hardening idempotency, security evidence, connectivity and network restrictions."
 echo "Evidence: $WORK/evidence"
 if (( LAB_HOLD_MINUTES > 0 )); then
   echo "Holding the lab for $LAB_HOLD_MINUTES minute(s); Ctrl-C triggers destroy."

@@ -1,0 +1,100 @@
+---
+- name: Collect sanitized Linux security evidence
+  hosts: aws_lab
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Require controller evidence directory
+      ansible.builtin.assert:
+        that:
+          - lab_evidence_dir is defined
+          - lab_evidence_dir | length > 0
+      run_once: true
+
+    - name: Create controller evidence directory
+      ansible.builtin.file:
+        path: "{{ lab_evidence_dir }}"
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Read effective SSH settings
+      ansible.builtin.command:
+        argv: [/usr/sbin/sshd, -T]
+      register: sshd_effective
+      changed_when: false
+
+    - name: Read host firewall status
+      ansible.builtin.command:
+        argv: [ufw, status, verbose]
+      register: ufw_status
+      changed_when: false
+      failed_when: false
+
+    - name: Read audit service state
+      ansible.builtin.command:
+        argv: [systemctl, is-active, auditd]
+      register: auditd_status
+      changed_when: false
+
+    - name: Read active audit rules
+      ansible.builtin.command:
+        argv: [auditctl, -l]
+      register: audit_rules
+      changed_when: false
+
+    - name: Assert key-only SSH baseline
+      ansible.builtin.assert:
+        that:
+          - "'permitrootlogin no' in sshd_effective.stdout"
+          - "'passwordauthentication no' in sshd_effective.stdout"
+          - "'kbdinteractiveauthentication no' in sshd_effective.stdout"
+          - "'pubkeyauthentication yes' in sshd_effective.stdout"
+
+    - name: Assert audit baseline
+      ansible.builtin.assert:
+        that:
+          - auditd_status.stdout | trim == 'active'
+          - "'labops_ssh_config' in audit_rules.stdout"
+          - "'labops_firewall_config' in audit_rules.stdout"
+          - "'labops_systemd_units' in audit_rules.stdout"
+
+    - name: Assert UFW on hosts where the lab owns the host firewall
+      ansible.builtin.assert:
+        that:
+          - "'Status: active' in ufw_status.stdout"
+          - "'Default: deny (incoming)' in ufw_status.stdout"
+      when: not (inventory_hostname == 'app' and (lab_app_runtime | default('systemd')) == 'k3s')
+
+    - name: Record per-host security evidence on controller
+      ansible.builtin.copy:
+        dest: "{{ lab_evidence_dir }}/{{ inventory_hostname }}.json"
+        mode: '0600'
+        content: |
+          {{
+            {
+              'host': inventory_hostname,
+              'private_ip': lab_private_ip,
+              'ssh': {
+                'permit_root_login_no': 'permitrootlogin no' in sshd_effective.stdout,
+                'password_authentication_no': 'passwordauthentication no' in sshd_effective.stdout,
+                'keyboard_interactive_no': 'kbdinteractiveauthentication no' in sshd_effective.stdout,
+                'public_key_authentication_yes': 'pubkeyauthentication yes' in sshd_effective.stdout
+              },
+              'auditd_active': auditd_status.stdout | trim == 'active',
+              'audit_rule_keys': [
+                'labops_ssh_config',
+                'labops_firewall_config',
+                'labops_systemd_units'
+              ],
+              'ufw_expected_active': not (
+                inventory_hostname == 'app' and
+                (lab_app_runtime | default('systemd')) == 'k3s'
+              ),
+              'ufw_status': ufw_status.stdout_lines
+            } | to_nice_json
+          }}
+      delegate_to: localhost
+      become: false

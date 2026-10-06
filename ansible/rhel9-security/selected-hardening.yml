@@ -1,0 +1,184 @@
+---
+- name: Apply selected RHEL 9 STIG-aligned controls
+  hosts: rhel9
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Require Red Hat Enterprise Linux 9
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'RedHat'
+          - ansible_distribution_major_version == '9'
+        fail_msg: "This selected-control profile must run on RHEL 9."
+
+    - name: Install selected security packages
+      ansible.builtin.dnf:
+        name:
+          - audit
+          - firewalld
+          - openssh-server
+          - policycoreutils
+        state: present
+
+    - name: Configure SELinux enforcing at boot
+      ansible.builtin.lineinfile:
+        path: /etc/selinux/config
+        regexp: '^SELINUX='
+        line: 'SELINUX=enforcing'
+
+    - name: Configure SELinux targeted policy
+      ansible.builtin.lineinfile:
+        path: /etc/selinux/config
+        regexp: '^SELINUXTYPE='
+        line: 'SELINUXTYPE=targeted'
+
+    - name: Read current SELinux enforcement state
+      ansible.builtin.command: getenforce
+      register: selinux_state
+      changed_when: false
+
+    - name: Refuse to claim runtime enforcement when SELinux is disabled
+      ansible.builtin.assert:
+        that:
+          - selinux_state.stdout | trim != 'Disabled'
+        fail_msg: >-
+          SELinux is disabled at runtime. The boot configuration was staged,
+          but this run cannot prove enforcement until the host is rebooted/relabelled as required.
+
+    - name: Enable SELinux enforcement immediately when currently permissive
+      ansible.builtin.command:
+        argv: [setenforce, '1']
+      when: selinux_state.stdout | trim == 'Permissive'
+      changed_when: true
+
+    - name: Enable and start firewalld
+      ansible.builtin.systemd_service:
+        name: firewalld
+        enabled: true
+        state: started
+
+    - name: Query permanent SSH firewall service
+      ansible.builtin.command:
+        argv: [firewall-cmd, --permanent, --query-service=ssh]
+      register: ssh_firewall_service
+      changed_when: false
+      failed_when: ssh_firewall_service.rc not in [0, 1]
+
+    - name: Permit SSH through firewalld
+      ansible.builtin.command:
+        argv: [firewall-cmd, --permanent, --add-service=ssh]
+      when: ssh_firewall_service.rc == 1
+      notify: Reload firewalld
+      changed_when: true
+
+    - name: Install RHEL SSH hardening drop-in
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/99-labops-selected-hardening.conf
+        owner: root
+        group: root
+        mode: '0600'
+        content: |
+          PermitRootLogin no
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PubkeyAuthentication yes
+      notify: Reload sshd
+
+    - name: Validate sshd configuration
+      ansible.builtin.command:
+        argv: [/usr/sbin/sshd, -t]
+      changed_when: false
+
+    - name: Configure default interactive-user umask
+      ansible.builtin.lineinfile:
+        path: /etc/login.defs
+        regexp: '^\s*UMASK\s+'
+        line: 'UMASK 077'
+
+    - name: Require auditd to write logs to disk
+      ansible.builtin.lineinfile:
+        path: /etc/audit/auditd.conf
+        regexp: '^\s*write_logs\s*='
+        line: 'write_logs = yes'
+        owner: root
+        group: root
+        mode: '0600'
+      notify: Restart auditd
+
+    - name: Find audit rule files
+      ansible.builtin.find:
+        paths: /etc/audit/rules.d
+        patterns: '*.rules'
+        file_type: file
+      register: rhel_audit_rule_files
+
+    - name: Restrict audit rule file permissions
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: root
+        group: root
+        mode: '0600'
+      loop: "{{ rhel_audit_rule_files.files }}"
+
+    - name: Ensure auditd is enabled and active
+      ansible.builtin.systemd_service:
+        name: auditd
+        enabled: true
+        state: started
+
+    - name: Apply pending security handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify SELinux enforcing
+      ansible.builtin.command: getenforce
+      register: selinux_verify
+      changed_when: false
+
+    - name: Verify SELinux targeted policy
+      ansible.builtin.command: sestatus
+      register: sestatus_verify
+      changed_when: false
+
+    - name: Verify firewalld state
+      ansible.builtin.command:
+        argv: [firewall-cmd, --state]
+      register: firewalld_verify
+      changed_when: false
+
+    - name: Verify auditd state
+      ansible.builtin.command:
+        argv: [systemctl, is-active, auditd]
+      register: auditd_verify
+      changed_when: false
+
+    - name: Read effective RHEL SSH configuration
+      ansible.builtin.command:
+        argv: [/usr/sbin/sshd, -T]
+      register: rhel_sshd_effective
+      changed_when: false
+
+    - name: Assert selected runtime controls
+      ansible.builtin.assert:
+        that:
+          - selinux_verify.stdout | trim == 'Enforcing'
+          - "'Loaded policy name:             targeted' in sestatus_verify.stdout or 'Loaded policy name: targeted' in sestatus_verify.stdout"
+          - firewalld_verify.stdout | trim == 'running'
+          - auditd_verify.stdout | trim == 'active'
+          - "'permitrootlogin no' in rhel_sshd_effective.stdout"
+          - "'passwordauthentication no' in rhel_sshd_effective.stdout"
+
+  handlers:
+    - name: Reload firewalld
+      ansible.builtin.command:
+        argv: [firewall-cmd, --reload]
+      changed_when: true
+
+    - name: Reload sshd
+      ansible.builtin.systemd_service:
+        name: sshd
+        state: reloaded
+
+    - name: Restart auditd
+      ansible.builtin.command:
+        argv: [/sbin/service, auditd, restart]
+      changed_when: true
