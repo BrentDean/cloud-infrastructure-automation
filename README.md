@@ -3,6 +3,7 @@
 [![AWS three-tier validation](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/aws-three-tier-validation.yml/badge.svg)](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/aws-three-tier-validation.yml)
 [![Shared Python API validation](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/python-api-validation.yml/badge.svg)](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/python-api-validation.yml)
 [![AWS k3s mode validation](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/k3s-validation.yml/badge.svg)](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/k3s-validation.yml)
+[![Go AWS CDK validation](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/go-cdk-validation.yml/badge.svg)](https://github.com/BrentDean/cloud-infrastructure-automation/actions/workflows/go-cdk-validation.yml)
 
 **Disposable AWS infrastructure + a working security operations application.**
 
@@ -175,7 +176,7 @@ The DB and web Ansible plays finished with `failed=0`, then both returned `chang
 | Area | Implemented and exercised |
 | --- | --- |
 | AWS networking | VPC, public web plus private app/broker/DB subnets, IGW, NAT/EIP, four EC2 roles, scoped SG-to-SG paths, ephemeral SSH bastion |
-| Infrastructure as Code | Terraform plan/apply/output/destroy, state isolation per run, cleanup recovery, runtime-dependent app sizing and ingress |
+| Infrastructure as Code | Terraform owns the disposable network/compute lifecycle; a separate Go AWS CDK v2 operations stack synthesizes CloudWatch/SNS resources from Terraform-provided EC2 IDs without overlapping ownership |
 | Linux automation | Ansible apt/config/systemd automation plus dedicated NATS and Go-worker roles, handlers, cloud-init waits, hardened service units and verified changed=0 idempotency |
 | Containers and Kubernetes | Docker build, private SSH image transfer, containerd import, k3s, Namespace, Deployment, Service, NodePort, health probes |
 | Application integration | Shared Flask source, dedicated PostgreSQL 16, DB-backed health API and app credentials supplied at runtime |
@@ -201,6 +202,7 @@ The DB and web Ansible plays finished with `failed=0`, then both returned `chang
 | Image deployment and live Kubernetes assertions | [`scripts/k3s/aws-deploy.sh`](scripts/k3s/aws-deploy.sh), [`aws-verify.sh`](scripts/k3s/aws-verify.sh) |
 | Three-tier connectivity and negative security checks | [`ansible/aws-three-tier/smoke-test.yml`](ansible/aws-three-tier/smoke-test.yml) |
 | Nagios/Icinga-compatible custom checks | [`monitoring/plugins/`](monitoring/plugins/), [monitoring integration notes](monitoring/README.md) |
+| Go AWS CDK operational layer | [`cdk/operations/`](cdk/operations/), [CDK synth validator](scripts/validate_cdk_synth.py) |
 | Linux hardening and selected RHEL 9 controls | [AWS hardening playbook](ansible/aws-three-tier/hardening.yml), [RHEL 9 selected profile](ansible/rhel9-security/selected-hardening.yml), [evidence boundaries](docs/security-controls.md) |
 | Shared Flask application and container | [`apps/three-tier-api/`](apps/three-tier-api/) |
 | LabOps dashboard, evidence intake, investigation and local demo | [`docs/labops.md`](docs/labops.md), [`scripts/seed-labops-demo.py`](scripts/seed-labops-demo.py) |
@@ -243,6 +245,6 @@ The original **September 22 systemd deployment** is pictured below. These images
 
 </details>
 
-**Implemented and live-tested on AWS:** the two historical three-host infrastructure runtime modes and the checks documented above. **Implemented and verified locally/in CI:** LabOps incident management, JetStream replay, Ansible-managed messaging, Nagios/Icinga-compatible custom plugin execution, and static validation of the dedicated broker plus Linux hardening/evidence contracts. **Implemented for the next AWS live run but not yet live-verified:** UFW host-firewall rules, SSH/audit hardening and per-host security evidence on the current four-host topology. **RHEL 9:** selected SELinux/firewalld/audit/SSH/umask controls are syntax/static validated only until the separate RHEL VM exercise. **Not claimed:** full DISA STIG compliance, a federal A&A, or operation of a Nagios/Icinga server/notification stack. **Not yet implemented or verified:** real Splunk ingestion, VPC Flow Log/CloudTrail analysis, authentication/TLS for an externally accessible dashboard, security response; Kubernetes update/failure-injection exercises; CloudWatch alerting; independent PostgreSQL backup/rebuild with measured RPO/RTO. [Next proposed milestone: evaluate real Splunk telemetry →](https://github.com/BrentDean/cloud-infrastructure-automation/issues/9).
+**Implemented and live-tested on AWS:** the two historical three-host infrastructure runtime modes and the checks documented above. **Implemented and verified locally/in CI:** LabOps incident management, JetStream replay, Ansible-managed messaging, Nagios/Icinga-compatible custom plugin execution, the Go AWS CDK v2 operational stack through unit tests and CloudFormation synthesis, and static validation of the dedicated broker plus Linux hardening/evidence contracts. **Implemented for the next AWS live run but not yet live-verified:** UFW host-firewall rules, SSH/audit hardening and per-host security evidence on the current four-host topology, plus deployment of the synthesized CDK CloudWatch alarms/SNS topic and notification delivery. **RHEL 9:** selected SELinux/firewalld/audit/SSH/umask controls are syntax/static validated only until the separate RHEL VM exercise. **Not claimed:** full DISA STIG compliance, a federal A&A, or operation of a Nagios/Icinga server/notification stack. **Not yet implemented or verified:** real Splunk ingestion, VPC Flow Log/CloudTrail analysis, authentication/TLS for an externally accessible dashboard, security response; Kubernetes update/failure-injection exercises; independent PostgreSQL backup/rebuild with measured RPO/RTO. [Next proposed milestone: evaluate real Splunk telemetry →](https://github.com/BrentDean/cloud-infrastructure-automation/issues/9).
 
 The repository also includes [Ansible staging-server backups](ansible/backup.yml) and [infrastructure audits](ansible/audit.yml) for an **existing, separate Hetzner VPS**. The disposable AWS runner does **not** connect to or modify that server.

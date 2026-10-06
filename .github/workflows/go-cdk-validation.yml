@@ -1,0 +1,56 @@
+name: Go AWS CDK Validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synth:
+    name: Go CDK tests and synth (no cloud deployment)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+          cache-dependency-path: cdk/operations/go.sum
+      - name: Resolve and verify pinned CDK module graph
+        working-directory: cdk/operations
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+          go mod verify
+      - name: Go CDK unit tests
+        working-directory: cdk/operations
+        run: go test ./...
+      - name: Go vet
+        working-directory: cdk/operations
+        run: go vet ./...
+      - name: Require gofmt
+        working-directory: cdk/operations
+        run: |
+          unformatted="$(gofmt -l .)"
+          test -z "$unformatted" || {
+            echo "gofmt required for:"
+            echo "$unformatted"
+            exit 1
+          }
+      - name: Synthesize CloudFormation without AWS credentials
+        working-directory: cdk/operations
+        env:
+          CDK_DEFAULT_ACCOUNT: '111111111111'
+          CDK_DEFAULT_REGION: us-east-1
+        run: |
+          rm -rf cdk.out
+          go run .
+          find cdk.out -maxdepth 2 -type f -print
+          test -f cdk.out/LabOpsOperations.template.json
+      - name: Validate synthesized ownership boundary
+        run: |
+          python3 scripts/validate_cdk_synth.py             cdk/operations/cdk.out/LabOpsOperations.template.json

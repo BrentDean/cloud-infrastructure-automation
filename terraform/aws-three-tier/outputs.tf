@@ -16,3 +16,14 @@ output "db_private_ip" {
 output "run_id" {
   value = var.run_id
 }
+
+
+output "instance_ids" {
+  description = "Terraform-owned EC2 instance IDs for the optional CDK operations layer."
+  value = {
+    web    = aws_instance.role["web"].id
+    app    = aws_instance.role["app"].id
+    broker = aws_instance.role["broker"].id
+    db     = aws_instance.role["db"].id
+  }
+}

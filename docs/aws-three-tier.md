@@ -23,7 +23,11 @@ API and from the broker security group for the Go consumer. SSH to app,
 broker and DB is admitted only from the web/bastion security group.
 
 The current, not-yet-live-reverified revision Ansible-manages NATS JetStream
-and the Go event worker on the dedicated broker EC2. NATS monitoring remains
+and the Go event worker on the dedicated broker EC2. A separate Go AWS CDK v2
+stack under `cdk/operations/` adds an optional operational layer without
+taking ownership of Terraform resources: the four EC2 instance IDs are
+CloudFormation parameters, and the synthesized stack contains only an SNS
+alarm topic, CloudWatch alarms, and a dashboard. NATS monitoring remains
 loopback-only. CI proves the roles install, start, run idempotently, and deliver
 a JetStream event to PostgreSQL; Terraform and cross-layer tests validate the
 new subnet and SG paths. The September 2026 AWS runs do **not** prove this
@@ -76,6 +80,23 @@ AWS_PROFILE=vps-lab ./scripts/destroy-aws-three-tier.sh /home/kalibob/.local/sta
 ```
 
 Do not delete the state or the run directory before cleanup succeeds. The manual script destroys only objects in that run's Terraform state. AWS Budgets is a billing alert, not a cap. Never enable unattended GitHub Actions apply/destroy without an independent cloud-side stale-resource cleanup mechanism.
+
+## Optional Go AWS CDK operations layer
+
+Terraform remains authoritative for VPC/network/EC2 lifecycle. The Go CDK
+stack is intentionally additive and is validated in a separate non-billable CI
+workflow. Terraform exposes an `instance_ids` output map, and the CDK stack consumes
+the four values as `AWS::EC2::Instance::Id` CloudFormation parameters for
+web, app, broker and database. It then synthesizes four EC2 status-check
+alarms, one broker high-CPU alarm, one SNS topic and one CloudWatch dashboard.
+
+CI also rejects any synthesized EC2/VPC/subnet/security-group resources in this
+stack. This prevents accidental dual ownership between Terraform and
+CloudFormation.
+
+Current evidence is **Go unit test + CDK synthesis only**. The CDK stack has not
+yet been bootstrapped or deployed in the AWS account. AWS CDK v2.272.0 is
+pinned for reproducibility.
 
 ## Portfolio narrative
 
