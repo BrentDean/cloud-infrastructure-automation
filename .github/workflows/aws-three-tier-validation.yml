@@ -42,10 +42,24 @@ jobs:
           broker ansible_connection=local
           [lab_db]
           db ansible_connection=local
+          [aws_lab:children]
+          lab_web
+          lab_app
+          lab_broker
+          lab_db
           INVENTORY
           ansible-playbook -i /tmp/aws-three-tier-inventory.ini ansible/aws-three-tier/configure.yml --syntax-check
           ansible-playbook -i /tmp/aws-three-tier-inventory.ini ansible/aws-three-tier/messaging.yml --syntax-check
+          ansible-playbook -i /tmp/aws-three-tier-inventory.ini ansible/aws-three-tier/hardening.yml --syntax-check
+          ansible-playbook -i /tmp/aws-three-tier-inventory.ini ansible/aws-three-tier/security-evidence.yml --syntax-check
           ansible-playbook -i /tmp/aws-three-tier-inventory.ini ansible/aws-three-tier/smoke-test.yml --syntax-check
+          cat > /tmp/rhel9-inventory.ini <<'INVENTORY'
+          [rhel9]
+          rhel9node ansible_connection=local
+          INVENTORY
+          ansible-playbook -i /tmp/rhel9-inventory.ini ansible/rhel9-security/selected-hardening.yml --syntax-check
+      - name: Validate security-control contracts
+        run: python3 scripts/validate_security_controls.py
       - name: Validate runner shell scripts
         run: bash -n scripts/run-aws-three-tier.sh scripts/build-event-worker.sh scripts/destroy-aws-three-tier.sh
 
