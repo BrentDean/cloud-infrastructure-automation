@@ -153,3 +153,37 @@ def test_size_limit_is_json(client):
     )
     assert response.status_code == 413
     assert response.json["error"]["code"] == "payload_too_large"
+
+
+def test_create_publishes_event_after_database_commit(client, monkeypatch):
+    order = []
+
+    def create(title, description, severity):
+        order.append("database")
+        return RECORD
+
+    def publish(incident):
+        order.append("publish")
+        assert incident["id"] == IDENTIFIER
+
+    monkeypatch.setattr(api.db, "create_incident", create)
+    monkeypatch.setattr(api.events, "publish_incident_created", publish)
+
+    response = client.post("/api/v1/incidents", json=VALID)
+
+    assert response.status_code == 201
+    assert order == ["database", "publish"]
+
+
+def test_broker_failure_does_not_turn_committed_incident_into_503(client, monkeypatch):
+    monkeypatch.setattr(api.db, "create_incident", lambda *args: RECORD)
+
+    def unavailable(_incident):
+        raise RuntimeError("synthetic broker outage")
+
+    monkeypatch.setattr(api.events, "publish_incident_created", unavailable)
+
+    response = client.post("/api/v1/incidents", json=VALID)
+
+    assert response.status_code == 201
+    assert response.json == {"incident": RECORD}

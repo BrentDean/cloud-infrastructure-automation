@@ -48,7 +48,7 @@ for migration in apps/three-tier-api/migrations/*.sql; do
 done
 
 docker compose --env-file "$LABOPS_ENV" \
-  -f apps/three-tier-api/compose.integration.yaml up -d --build --wait api
+  -f apps/three-tier-api/compose.integration.yaml up -d --build --wait api worker
 
 # Optional: create four fictional incidents and seven fictional SSH events.
 # Run once unless you deliberately want more demo records.
@@ -175,6 +175,7 @@ The DB and web Ansible plays finished with `failed=0`, then both returned `chang
 | Containers and Kubernetes | Docker build, private SSH image transfer, containerd import, k3s, Namespace, Deployment, Service, NodePort, health probes |
 | Application integration | Shared Flask source, dedicated PostgreSQL 16, DB-backed health API and app credentials supplied at runtime |
 | LabOps application | Versioned PostgreSQL incidents/events, manual synthetic SSH evidence ingestion with idempotent retry, browser-based triage and read-only source-IP investigation; locally and CI tested |
+| Event-driven integration | Local/CI Core NATS subject `labops.incident.created`, Flask publisher, Go subscriber, structured logs and PostgreSQL delivery persistence; JetStream durability and AWS broker deployment are future phases |
 | Security controls | Web /32, no public app/DB IP, explicit denied-path test, non-root containers, runtime-only Kubernetes Secret, encrypted EBS |
 | Storage testing | Test-only local-path PVC marker retained after Pod replacement; no DR claim |
 | CI and test automation | Python API tests, local Docker/PostgreSQL outage/recovery, Terraform/Ansible validation, offline k3s/cross-layer contract checks |
@@ -234,6 +235,6 @@ The original **September 22 systemd deployment** is pictured below. These images
 
 </details>
 
-**Implemented and live-tested on AWS:** the two infrastructure runtime modes and the checks documented above. **Implemented and verified locally/in CI:** LabOps incident management, synthetic event intake, and the browser investigation workflow. **Not yet implemented or verified:** live AWS deployment of the current LabOps application; real Splunk ingestion, VPC Flow Log/CloudTrail analysis, authentication/TLS for an externally accessible dashboard, security response; Kubernetes update/failure-injection exercises; CloudWatch alerting; independent PostgreSQL backup/rebuild with measured RPO/RTO. [Next proposed milestone: evaluate real Splunk telemetry →](https://github.com/BrentDean/cloud-infrastructure-automation/issues/9).
+**Implemented and live-tested on AWS:** the two infrastructure runtime modes and the checks documented above. **Implemented and verified locally/in CI:** LabOps incident management, synthetic event intake, the browser investigation workflow, and the Core-NATS Flask → Go worker → PostgreSQL event path. **Not yet implemented or verified:** JetStream durability/replay, a dedicated AWS broker host, live AWS deployment of the current LabOps application; real Splunk ingestion, VPC Flow Log/CloudTrail analysis, authentication/TLS for an externally accessible dashboard, security response; Kubernetes update/failure-injection exercises; CloudWatch alerting; independent PostgreSQL backup/rebuild with measured RPO/RTO. [Next proposed milestone: evaluate real Splunk telemetry →](https://github.com/BrentDean/cloud-infrastructure-automation/issues/9).
 
 The repository also includes [Ansible staging-server backups](ansible/backup.yml) and [infrastructure audits](ansible/audit.yml) for an **existing, separate Hetzner VPS**. The disposable AWS runner does **not** connect to or modify that server.
