@@ -81,7 +81,23 @@ later milestone.
 - The TorKit staging VPS and backup automation remain separate: the AWS
   runner does not connect to or mutate the staging node.
 
-## 6. Make test claims match observed evidence
+## 6. Keep Terraform authoritative; use Go CDK for the operations layer
+
+Terraform remains responsible for the disposable network, security groups, EC2
+roles, NAT and teardown. The Go AWS CDK v2 app under
+`cdk/operations-monitoring/` does not recreate or import those resources.
+Instead, it accepts the four Terraform-created EC2 instance IDs as
+CloudFormation parameters and synthesizes an optional operations stack:
+CloudWatch EC2 status alarms, an SNS alert topic encrypted with the AWS-managed
+SNS KMS key, and an operations dashboard.
+
+Terraform now exposes the four instance IDs explicitly for that handoff. This
+keeps the two IaC tools complementary and provides real Go/CDK implementation
+evidence without introducing a second owner for the VPC or EC2 lifecycle. CI
+runs CDK assertions, `go vet`, `gofmt`, module verification and
+credential-free synthesis; it never runs `cdk deploy`.
+
+## 7. Make test claims match observed evidence
 
 Keep original AWS systemd deployment results and timestamps separate from
 new k3s results. The September 24 live AWS run demonstrated node readiness, two Flask replicas,
@@ -92,7 +108,9 @@ this is not an independent, off-instance database backup.
 
 The next live milestone is one end-to-end AWS run of the **current four-host
 topology**, capturing Terraform apply/destroy, broker service health,
-app→broker and broker→DB paths, denied web→broker access, messaging delivery
-and second-pass Ansible idempotency. After that, connected milestones can add
-Kubernetes rollout/failure recovery; least-privilege IAM/CloudWatch; and an
-independent PostgreSQL backup/rebuild exercise.
+app→broker and broker→DB paths, denied web→broker access, messaging delivery,
+Linux-hardening evidence and second-pass Ansible idempotency. The optional CDK
+operations stack can then be deployed against the Terraform instance-ID outputs
+and verified separately before teardown. After that, connected milestones can
+add Kubernetes rollout/failure recovery, least-privilege IAM refinements, and
+an independent PostgreSQL backup/rebuild exercise.
