@@ -1,0 +1,26 @@
+[Unit]
+Description=LabOps JetStream event worker
+After=network-online.target nats-server.service
+Wants=network-online.target nats-server.service
+
+[Service]
+Type=simple
+User={{ event_worker_user }}
+Group={{ event_worker_group }}
+EnvironmentFile={{ event_worker_config_dir }}/worker.env
+ExecStart={{ event_worker_install_dir }}/event-worker
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

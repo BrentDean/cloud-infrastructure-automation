@@ -86,18 +86,21 @@ flowchart TD
   Internet["Operator public IPv4 /32"]
   Web["Public subnet: web EC2<br/>Nginx · SSH bastion"]
   App["Private app subnet: app EC2<br/>systemd/Gunicorn OR single-node k3s"]
+  Messaging["App-host messaging services<br/>NATS JetStream · Go event worker"]
   Pods["k3s: Flask Deployment<br/>2 non-root Pods · readiness/liveness probes"]
   Database["Private DB subnet: DB EC2<br/>PostgreSQL 16 · encrypted gp3 EBS"]
   NAT["NAT gateway<br/>outbound package access"]
   Operator --> Internet --> Web
   Web -->|"TCP 8000 systemd / 30080 k3s<br/>web security group only"| App
+  App --> Messaging
   App --> Pods
+  Messaging -->|"TCP 5432"| Database
   App -->|"TCP 5432<br/>app security group only"| Database
   NAT -. "private subnet outbound" .-> App
   NAT -. "private subnet outbound" .-> Database
 ```
 
-One `10.20.0.0/16` VPC; a public subnet for the web tier; separate private subnets for application and database; an internet gateway and NAT gateway; and ephemeral operator SSH credentials. Neither the app nor DB EC2 has a public IP. Web HTTP/SSH ingress is restricted to the operator's current IPv4 `/32`. This is **single-AZ, single-node k3s**, not EKS, multi-node HA or a production-ready public API.
+One `10.20.0.0/16` VPC; a public subnet for the web tier; separate private subnets for application and database; an internet gateway and NAT gateway; and ephemeral operator SSH credentials. Neither the app nor DB EC2 has a public IP. Web HTTP/SSH ingress is restricted to the operator's current IPv4 `/32`. The NATS/Go services shown on the app host are the **current CI-verified revision** and were not present in the September AWS evidence. This is **single-AZ, single-node k3s**, not EKS, multi-node HA or a production-ready public API.
 
 ### Same application, two deployment paths
 
@@ -108,6 +111,7 @@ One `10.20.0.0/16` VPC; a public subnet for the web tier; separate private subne
 | HTTP backend | TCP `8000` | Kubernetes Service/NodePort `30080`, only from web SG |
 | Process/workload management | systemd | Single-node k3s, Deployment with two Pods, probes |
 | Database | Dedicated private PostgreSQL 16 EC2 | **The same dedicated private PostgreSQL EC2** |
+| Messaging (current revision) | NATS JetStream + Go worker as hardened systemd services on app EC2 | Same app-host services; Pods receive private NATS URL through runtime ConfigMap |
 | Public entry | Operator-/32 Nginx `/health` | Same Nginx web server and SSH bastion |
 | Lifecycle | Terraform → Ansible → tests → destroy | Terraform → Ansible → k3s → Kubernetes → tests → destroy |
 
@@ -171,11 +175,11 @@ The DB and web Ansible plays finished with `failed=0`, then both returned `chang
 | --- | --- |
 | AWS networking | VPC, three subnets, IGW, NAT/EIP, routing, EC2 roles, scoped security groups, ephemeral SSH bastion |
 | Infrastructure as Code | Terraform plan/apply/output/destroy, state isolation per run, cleanup recovery, runtime-dependent app sizing and ingress |
-| Linux automation | Ansible apt, config files, systemd services, handlers, cloud-init waits, repeatable configuration, idempotency check |
+| Linux automation | Ansible apt/config/systemd automation plus dedicated NATS and Go-worker roles, handlers, cloud-init waits, hardened service units and verified changed=0 idempotency |
 | Containers and Kubernetes | Docker build, private SSH image transfer, containerd import, k3s, Namespace, Deployment, Service, NodePort, health probes |
 | Application integration | Shared Flask source, dedicated PostgreSQL 16, DB-backed health API and app credentials supplied at runtime |
 | LabOps application | Versioned PostgreSQL incidents/events, manual synthetic SSH evidence ingestion with idempotent retry, browser-based triage and read-only source-IP investigation; locally and CI tested |
-| Event-driven integration | Local/CI JetStream file storage, publish acknowledgements and message IDs, durable explicit-ack Go consumer, retry/poison-event handling, PostgreSQL idempotency, and replay after worker plus broker restart; AWS broker deployment remains a future phase |
+| Event-driven integration | JetStream file storage, publish acknowledgements/message IDs, durable explicit-ack Go consumer, retry/poison handling and PostgreSQL idempotency; Ansible deployment is exercised in CI, while a dedicated AWS broker host remains a future phase |
 | Security controls | Web /32, no public app/DB IP, explicit denied-path test, non-root containers, runtime-only Kubernetes Secret, encrypted EBS |
 | Storage testing | Test-only local-path PVC marker retained after Pod replacement; no DR claim |
 | CI and test automation | Python API tests, local Docker/PostgreSQL outage/recovery, Terraform/Ansible validation, offline k3s/cross-layer contract checks |
@@ -189,7 +193,7 @@ The DB and web Ansible plays finished with `failed=0`, then both returned `chang
 | --- | --- |
 | AWS VPC, subnets, EC2, SGs, NAT and volumes | [`terraform/aws-three-tier/`](terraform/aws-three-tier/) |
 | Full lifecycle orchestrator | [`scripts/run-aws-three-tier.sh`](scripts/run-aws-three-tier.sh) |
-| PostgreSQL, systemd application and Nginx configuration | [`ansible/aws-three-tier/configure.yml`](ansible/aws-three-tier/configure.yml) |
+| PostgreSQL, NATS/Go-worker roles, systemd application and Nginx configuration | [`ansible/aws-three-tier/configure.yml`](ansible/aws-three-tier/configure.yml), [`roles/`](ansible/aws-three-tier/roles/) |
 | Private Kubernetes installer | [`ansible/k3s/install.yml`](ansible/k3s/install.yml) |
 | Kubernetes Deployment, Service and test PVC | [`kubernetes/k3s/`](kubernetes/k3s/) |
 | Image deployment and live Kubernetes assertions | [`scripts/k3s/aws-deploy.sh`](scripts/k3s/aws-deploy.sh), [`aws-verify.sh`](scripts/k3s/aws-verify.sh) |
@@ -235,6 +239,6 @@ The original **September 22 systemd deployment** is pictured below. These images
 
 </details>
 
-**Implemented and live-tested on AWS:** the two infrastructure runtime modes and the checks documented above. **Implemented and verified locally/in CI:** LabOps incident management, synthetic event intake, the browser investigation workflow, and the JetStream Flask → durable Go consumer → PostgreSQL path, including replay after the worker is stopped and the NATS server is restarted. **Not yet implemented or verified:** a dedicated AWS broker host, Ansible deployment of NATS/the worker, live AWS deployment of the current LabOps application; real Splunk ingestion, VPC Flow Log/CloudTrail analysis, authentication/TLS for an externally accessible dashboard, security response; Kubernetes update/failure-injection exercises; CloudWatch alerting; independent PostgreSQL backup/rebuild with measured RPO/RTO. [Next proposed milestone: evaluate real Splunk telemetry →](https://github.com/BrentDean/cloud-infrastructure-automation/issues/9).
+**Implemented and live-tested on AWS:** the two historical infrastructure runtime modes and the checks documented above. **Implemented and verified locally/in CI:** LabOps incident management, synthetic event intake, the browser investigation workflow, JetStream replay, and Ansible-managed NATS + Go-worker deployment with a second run at changed=0 and end-to-end event persistence. **Not yet live-verified on AWS:** the current LabOps/messaging revision and a dedicated broker host. **Not yet implemented or verified:** real Splunk ingestion, VPC Flow Log/CloudTrail analysis, authentication/TLS for an externally accessible dashboard, security response; Kubernetes update/failure-injection exercises; CloudWatch alerting; independent PostgreSQL backup/rebuild with measured RPO/RTO. [Next proposed milestone: evaluate real Splunk telemetry →](https://github.com/BrentDean/cloud-infrastructure-automation/issues/9).
 
 The repository also includes [Ansible staging-server backups](ansible/backup.yml) and [infrastructure audits](ansible/audit.yml) for an **existing, separate Hetzner VPS**. The disposable AWS runner does **not** connect to or modify that server.

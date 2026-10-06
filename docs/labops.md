@@ -361,6 +361,20 @@ logs that failure and preserves the successful incident response rather than
 claiming the database write failed. A transactional outbox would be the next
 step if atomic database-to-broker handoff were required.
 
-This remains local/CI evidence only. No dedicated broker EC2 instance, AWS
-security-group rule, Ansible NATS/worker role, or live AWS JetStream run is
-claimed by this milestone.
+The deployment layer now includes dedicated Ansible roles for NATS and the Go
+worker. Non-billable CI installs the pinned NATS release onto an Ubuntu runner,
+renders the JetStream and systemd configuration, deploys the controller-built
+worker, runs the playbook a second time at `changed=0`, publishes a JetStream
+event, and requires its PostgreSQL delivery row.
+
+The existing three-host AWS runner is wired to place these messaging services
+on the **private app EC2** as an interim topology: systemd Flask receives
+`NATS_URL` directly, while k3s Pods receive the same private endpoint through
+a runtime-only ConfigMap. The worker connects to the dedicated PostgreSQL host.
+The web tier has no NATS ingress rule, and the AWS smoke play now includes a
+negative web→4222 check plus a synthetic API→JetStream→worker→PostgreSQL check.
+
+This is still **not live AWS evidence for the messaging revision**. The
+September AWS screenshots predate these changes. A dedicated broker EC2,
+broker-specific security group, and a new explicitly recorded live AWS run
+remain future milestones.

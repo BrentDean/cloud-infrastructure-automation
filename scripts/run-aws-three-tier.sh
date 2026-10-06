@@ -33,7 +33,7 @@ if [[ "$LAB_APP_RUNTIME" == k3s ]]; then
 fi
 export TF_VAR_app_runtime="$LAB_APP_RUNTIME"
 
-for cmd in terraform aws python3 ssh ssh-keygen openssl curl flock tee; do
+for cmd in terraform aws python3 ssh ssh-keygen openssl curl flock tee file sha256sum; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "Missing prerequisite: $cmd" >&2
     exit 1
@@ -87,6 +87,12 @@ echo "Private run directory: $WORK"
 RUN_ID="lab-$(basename "$WORK" | cut -d . -f 2 | tr '[:upper:]' '[:lower:]')"
 EXPIRES_AT="$(date -u -d '+4 hours' '+%Y-%m-%dT%H:%M:%SZ')"
 ssh-keygen -q -t ed25519 -N '' -C "aws-three-tier-$RUN_ID" -f "$WORK/id_ed25519"
+
+# Build the static amd64 Go worker before creating billable AWS resources.
+# The helper uses a local Go 1.26+ toolchain when available, otherwise Docker.
+export LAB_EVENT_WORKER_BINARY="$WORK/event-worker"
+"$ROOT/scripts/build-event-worker.sh" "$LAB_EVENT_WORKER_BINARY"
+sha256sum "$LAB_EVENT_WORKER_BINARY" > "$WORK/evidence/event-worker.sha256"
 
 python3 - "$WORK/terraform/lab.auto.tfvars.json" "$RUN_ID" "$EXPIRES_AT" "$ALLOWED_CIDR" "$AWS_REGION" "$WORK/id_ed25519.pub" "$LAB_APP_RUNTIME" <<'PY'
 import json, pathlib, sys
@@ -222,7 +228,7 @@ fi
 python3 - "$WORK/evidence/configure-second.log" "$LAB_APP_RUNTIME" <<'PY'
 import pathlib, re, sys
 s = pathlib.Path(sys.argv[1]).read_text()
-for host in ('web', 'db') if sys.argv[2] == 'k3s' else ('web', 'app', 'db'):
+for host in ('web', 'app', 'db'):
     p = rf'(?m)^\s*{host}\s*:\s*ok=\d+\s+changed=0\s+unreachable=0\s+failed=0\b'
     if not re.search(p, s):
         raise SystemExit(f'Idempotency verification failed for {host}')
@@ -246,7 +252,7 @@ PY
 
 printf 'RUN_ID=%s\nREGION=%s\nAPP_RUNTIME=%s\nPUBLIC_WEB_IP=%s\nEXPIRES_AT=%s\n' \
   "$RUN_ID" "$AWS_REGION" "$LAB_APP_RUNTIME" "$WEB_IP" "$EXPIRES_AT" > "$WORK/evidence/run-summary.txt"
-echo "PASS: three-tier provisioning, configuration, idempotency, connectivity, network restrictions."
+echo "PASS: three-tier provisioning, Ansible messaging services, idempotency, connectivity, network restrictions."
 echo "Evidence: $WORK/evidence"
 if (( LAB_HOLD_MINUTES > 0 )); then
   echo "Holding the lab for $LAB_HOLD_MINUTES minute(s); Ctrl-C triggers destroy."
