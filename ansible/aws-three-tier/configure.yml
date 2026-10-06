@@ -149,11 +149,61 @@
           - /usr/local/share/aws-three-tier/0002_security_events.sql
       when: security_events_schema.stdout | trim != 'security_events'
 
+    - name: Install LabOps event-delivery schema migration
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../apps/three-tier-api/migrations/0003_event_deliveries.sql"
+        dest: /usr/local/share/aws-three-tier/0003_event_deliveries.sql
+        mode: '0644'
+
+    - name: Check whether LabOps event-delivery schema already exists
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -d
+          - labdb
+          - -tAc
+          - "SELECT to_regclass('public.event_deliveries')"
+      register: event_deliveries_schema
+      changed_when: false
+
+    - name: Apply LabOps event-delivery migration exactly once
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -v
+          - ON_ERROR_STOP=1
+          - -d
+          - labdb
+          - -f
+          - /usr/local/share/aws-three-tier/0003_event_deliveries.sql
+      when: event_deliveries_schema.stdout | trim != 'event_deliveries'
+
   handlers:
     - name: Restart PostgreSQL
       ansible.builtin.systemd_service:
         name: postgresql
         state: restarted
+
+- name: Configure private NATS JetStream and Go event worker
+  hosts: app
+  tags: [messaging]
+  become: true
+  gather_facts: true
+  pre_tasks:
+    - name: Wait for application-host cloud-init before messaging setup
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+  roles:
+    - role: nats
+    - role: event_worker
 
 - name: Deploy private Python application
   hosts: app
@@ -171,6 +221,7 @@
           - gunicorn
           - python3-flask
           - python3-psycopg2
+          - python3-venv
         state: present
         update_cache: true
         cache_valid_time: 3600
@@ -188,6 +239,22 @@
         state: directory
         mode: '0700'
 
+    - name: Create application virtual environment with system packages
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -m
+          - venv
+          - --system-site-packages
+          - /opt/aws-three-tier/venv
+        creates: /opt/aws-three-tier/venv/bin/python
+
+    - name: Install pinned Python NATS client into application environment
+      ansible.builtin.pip:
+        name: nats-py==2.16.0
+        executable: /opt/aws-three-tier/venv/bin/pip
+      notify: Restart application
+
     - name: Install shared database-backed health API
       ansible.builtin.copy:
         src: "{{ playbook_dir }}/../../apps/three-tier-api/app.py"
@@ -199,6 +266,13 @@
       ansible.builtin.copy:
         src: "{{ playbook_dir }}/../../apps/three-tier-api/db.py"
         dest: /opt/aws-three-tier/db.py
+        mode: '0644'
+      notify: Restart application
+
+    - name: Install shared LabOps JetStream publisher
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../apps/three-tier-api/events.py"
+        dest: /opt/aws-three-tier/events.py
         mode: '0644'
       notify: Restart application
 
@@ -224,7 +298,10 @@
         mode: '0600'
         content: |
           PGHOST={{ hostvars['db'].lab_private_ip }}
+          PGDATABASE=labdb
+          PGUSER=labuser
           PGPASSWORD={{ lookup('env', 'LAB_DB_PASSWORD') }}
+          NATS_URL=nats://{{ lab_private_ip }}:4222
       no_log: true
       notify: Restart application
 
@@ -243,7 +320,7 @@
           User=www-data
           EnvironmentFile=/etc/aws-three-tier/app.env
           WorkingDirectory=/opt/aws-three-tier
-          ExecStart=/usr/bin/gunicorn --bind {{ lab_private_ip }}:8000 --workers 2 app:app
+          ExecStart=/opt/aws-three-tier/venv/bin/python -m gunicorn --bind {{ lab_private_ip }}:8000 --workers 2 app:app
           Restart=on-failure
           RestartSec=2
 

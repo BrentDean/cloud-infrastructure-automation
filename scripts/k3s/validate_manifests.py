@@ -54,6 +54,9 @@ assert environment["PGPASSWORD"]["valueFrom"]["secretKeyRef"] == {
 }
 assert environment["PGDATABASE"]["value"] == "labdb"
 assert environment["PGUSER"]["value"] == "labuser"
+assert environment["NATS_URL"]["valueFrom"]["configMapKeyRef"] == {
+    "name": "messaging-endpoint", "key": "url"
+}
 
 claim = DOCS[("PersistentVolumeClaim", "lab-evidence")]["spec"]
 assert claim["storageClassName"] == "local-path"
@@ -64,7 +67,7 @@ assert pod["volumes"][0]["persistentVolumeClaim"]["claimName"] == "lab-evidence"
 assert pod["containers"][0]["volumeMounts"][0]["mountPath"] == "/data"
 
 assert not any(kind in {"StatefulSet", "Secret", "ConfigMap"} for kind, _ in DOCS), (
-    "PostgreSQL stays on EC2 #3; secrets and private DB IP are runtime-only"
+    "PostgreSQL stays on EC2 #3; secrets and private endpoint ConfigMaps are runtime-only"
 )
 
 print("PASS: private-tier NodePort, independent DB ConfigMap, non-root API, probes, runtime Secret, local-path PVC")

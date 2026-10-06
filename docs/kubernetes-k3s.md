@@ -3,7 +3,8 @@
 **Implementation status:** **live verified in AWS on September 24, 2026**.
 The private k3s application variant passed two-replica rollout, DB-backed
 health, network isolation, Pod-level PVC persistence and complete Terraform
-teardown (28 managed resources destroyed). See the [live verification record](live-verification-2026-09-24.md).
+teardown (28 managed resources destroyed). That September 24 run predates the
+new Ansible-managed NATS/Go-worker layer described below. See the [live verification record](live-verification-2026-09-24.md).
 The original systemd/Gunicorn variant was separately verified on September 22.
 
 ## Architecture
@@ -21,10 +22,12 @@ Workstation /32 -> web EC2 (public subnet)
                     TCP 30080, web SG only
                          v
                     app EC2 (private subnet; t3.medium default)
-                    k3s NodePort 30080 -> Flask Service
+                    ├─ NATS JetStream + Go worker (systemd)
+                    └─ k3s NodePort 30080 -> Flask Service
                                              |
                                 Flask Deployment, 2 non-root Pods
                                 liveness /healthz, readiness /readyz
+                                NATS_URL -> app private IP:4222
                                              |
                             PostgreSQL TCP 5432, app SG only
                                              v
@@ -35,7 +38,9 @@ Workstation /32 -> web EC2 (public subnet)
 The original mode still proxies web -> app:8000 with systemd Gunicorn.
 In k3s mode the AWS security-group rule changes to port 30080; Ansible
 configures Nginx and the smoke test to use that same port, and skips only
-the systemd application play. DB-to-app access remains security-group
+the systemd Flask play. The independent messaging play still manages NATS and
+the Go worker on the app EC2. A runtime-only `messaging-endpoint` ConfigMap
+gives the Flask Pods the private NATS URL. DB-to-app access remains security-group
 restricted, and the web tier cannot connect directly to PostgreSQL.
 
 The k3s Kubernetes API (6443), NodePort (30080), pod network, and
@@ -129,9 +134,10 @@ variant with `docker build --platform linux/amd64`, imports the image
 through the SSH bastion to private k3s containerd, and deploys
 `localhost/three-tier-api:pr2` with `imagePullPolicy: Never`.
 PostgreSQL remains installed through the existing AWS DB playbook.
-Kubernetes gets DB private IP through a runtime ConfigMap and password
-through a runtime Secret, not a committed manifest or Terraform state.
-Secrets encryption at rest is enabled for the single-node k3s datastore.
+Kubernetes gets DB private IP and the app-host NATS URL through runtime
+ConfigMaps and the database password through a runtime Secret, not committed
+endpoint/credential manifests or Terraform state. Secrets encryption at rest
+is enabled for the single-node k3s datastore.
 
 Verification asserts two available Flask Pods, a non-root process,
 Cluster Service DNS, `/healthz`, `/readyz`, and the legacy `/health`
@@ -174,8 +180,8 @@ bash -n scripts/k3s/*.sh scripts/run-aws-three-tier.sh
 ```
 
 The Kubernetes CI workflow and original AWS Terraform/Ansible workflow
-run automatically on PRs and never create cloud resources. Successful static checks and local Docker integration tests are distinct
-from the **September 24 live AWS deployment** documented in the
+run automatically on PRs and never create cloud resources. Successful static checks, local Docker tests, and the Ansible messaging-role
+integration are distinct from the **September 24 live AWS deployment** documented in the
 [live verification record](live-verification-2026-09-24.md).
 
 ## Teardown and later milestones

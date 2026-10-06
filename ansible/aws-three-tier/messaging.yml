@@ -1,0 +1,8 @@
+---
+- name: Configure NATS JetStream and LabOps Go event worker
+  hosts: app
+  become: true
+  gather_facts: true
+  roles:
+    - role: nats
+    - role: event_worker

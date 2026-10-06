@@ -64,6 +64,11 @@ spec:
                 secretKeyRef:
                   name: db-auth
                   key: password
+            - name: NATS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: messaging-endpoint
+                  key: url
             - name: TMPDIR
               value: /tmp
           resources:

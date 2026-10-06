@@ -11,6 +11,23 @@
         timeout: 20
         state: started
 
+    - name: Application host can reach its private NATS listener
+      ansible.builtin.wait_for:
+        host: "{{ lab_private_ip }}"
+        port: 4222
+        connect_timeout: 2
+        timeout: 20
+        state: started
+
+    - name: Require NATS and event worker systemd services
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - nats-server
+          - labops-event-worker
+      changed_when: false
+
 - name: Validate web network boundaries and end-to-end API
   hosts: web
   gather_facts: false
@@ -31,6 +48,14 @@
         timeout: 7
         state: stopped
 
+    - name: Web cannot reach NATS directly
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['app'].lab_private_ip }}"
+        port: 4222
+        connect_timeout: 2
+        timeout: 7
+        state: stopped
+
     - name: Nginx forwards to application and application queries PostgreSQL
       ansible.builtin.uri:
         url: http://127.0.0.1/health
@@ -44,3 +69,40 @@
           - api_health.json.status == 'ok'
           - api_health.json.db == 'connected'
           - api_health.json.db_result == 1
+
+
+    - name: Create one synthetic incident through Nginx for messaging verification
+      ansible.builtin.uri:
+        url: http://127.0.0.1/api/v1/incidents
+        method: POST
+        body_format: json
+        body:
+          title: Synthetic AWS messaging smoke
+          description: Disposable lab event used only to verify JetStream delivery.
+          severity: low
+        status_code: 201
+        return_content: true
+      register: messaging_smoke_incident
+
+- name: Verify JetStream consumer persisted the synthetic incident event
+  hosts: db
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Require one event-delivery row for the smoke incident
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -d
+          - labdb
+          - -tAc
+          - "SELECT count(*) FROM event_deliveries WHERE payload->>'incident_id' = '{{ hostvars['web'].messaging_smoke_incident.json.incident.id }}'"
+      register: messaging_delivery
+      changed_when: false
+      retries: 20
+      delay: 1
+      until: messaging_delivery.stdout | trim == '1'

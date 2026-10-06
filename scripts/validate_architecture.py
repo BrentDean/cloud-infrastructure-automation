@@ -73,12 +73,17 @@ def main() -> None:
             "DB ingress should be restricted to PostgreSQL TCP 5432")
 
     plays = yaml.safe_load(playbook)
-    require(len(plays) == 3, "Exactly three Ansible configuration roles are expected")
-    require([p["hosts"] for p in plays] == ["db", "app", "web"],
-            "Dedicated database, app, and public web Ansible roles must remain")
-    require(plays[1].get("tags") == ["systemd_app"],
+    require(len(plays) == 4, "DB, messaging, systemd app, and web plays are expected")
+    require([p["hosts"] for p in plays] == ["db", "app", "app", "web"],
+            "Database, private messaging/app, and public web Ansible targets must remain")
+    require(plays[1].get("tags") == ["messaging"],
+            "Messaging services must remain independent from the systemd app runtime")
+    role_names = [r if isinstance(r, str) else r.get("role") for r in plays[1]["roles"]]
+    require(role_names == ["nats", "event_worker"],
+            "Messaging play must deploy NATS before the Go event worker")
+    require(plays[2].get("tags") == ["systemd_app"],
             "k3s mode must skip only the original systemd app play")
-    proxy = next(t for t in plays[2]["tasks"]
+    proxy = next(t for t in plays[3]["tasks"]
                  if t.get("name") == "Configure application reverse proxy")
     content = proxy["ansible.builtin.copy"]["content"]
     require("lab_app_port | default(8000)" in content,
@@ -96,8 +101,10 @@ def main() -> None:
             "k3s Docker image must package the same dashboard as systemd")
     require("0001_incidents.sql" in playbook and "db.py" in playbook,
             "Both AWS app runtimes require shared LabOps schema and Python module")
-    require("0002_security_events.sql" in playbook,
-            "LabOps event schema must be migrated on the dedicated PostgreSQL tier")
+    require("0002_security_events.sql" in playbook and "0003_event_deliveries.sql" in playbook,
+            "LabOps event and delivery schemas must be migrated on PostgreSQL")
+    require("events.py" in playbook and "NATS_URL=nats://" in playbook,
+            "systemd Flask runtime must receive the JetStream publisher and endpoint")
     require("lab_app_port | default(8000) | int" in smoke,
             "Smoke test must select the same backend port as Nginx")
 
@@ -120,12 +127,17 @@ def main() -> None:
             "Private EC2 DB IP must come from runtime ConfigMap")
     require(env["PGPASSWORD"]["valueFrom"]["secretKeyRef"]["name"] == "db-auth",
             "PostgreSQL password must come from runtime-only Secret")
+    require(env["NATS_URL"]["valueFrom"]["configMapKeyRef"]["name"] == "messaging-endpoint",
+            "k3s Flask runtime must receive the private NATS endpoint at runtime")
 
     require('export LAB_APP_RUNTIME' in runner
             and 'export TF_VAR_app_runtime="$LAB_APP_RUNTIME"' in runner,
             "Runner must pass k3s selection to Terraform AND remote helper")
     require('CONFIGURE_ARGS=(--skip-tags systemd_app -e lab_app_port=30080)' in runner,
             "Runner must skip only the legacy app and set reverse-proxy NodePort")
+    require('scripts/build-event-worker.sh' in runner
+            and 'LAB_EVENT_WORKER_BINARY' in runner,
+            "AWS runner must build the Go worker before provisioning")
     require('scripts/k3s/aws-deploy.sh' in runner
             and 'scripts/k3s/aws-verify.sh' in runner,
             "AWS runner must invoke real k3s installation and verification")
@@ -143,8 +155,8 @@ def main() -> None:
     require(not (ROOT / "kubernetes/k3s/postgres.yaml").exists(),
             "PostgreSQL must remain on dedicated EC2, not in Kubernetes")
 
-    print("PASS: three AWS tiers, optional private k3s app, ports, runtime credentials,")
-    print("      retained systemd baseline, single AWS runner, teardown, and no Hetzner k3s")
+    print("PASS: three AWS tiers, Ansible messaging roles, optional private k3s app,")
+    print("      runtime credentials/endpoints, single AWS runner, teardown, and no Hetzner k3s")
 
 
 if __name__ == "__main__":

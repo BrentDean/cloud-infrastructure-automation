@@ -1,0 +1,9 @@
+server_name: "labops-{{ inventory_hostname }}"
+listen: "{{ nats_bind_host }}:{{ nats_client_port }}"
+http: "{{ nats_monitor_host }}:{{ nats_monitor_port }}"
+
+jetstream {
+  store_dir: "{{ nats_store_dir }}"
+  max_memory_store: {{ nats_max_memory_store }}
+  max_file_store: {{ nats_max_file_store }}
+}

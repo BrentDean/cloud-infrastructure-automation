@@ -52,9 +52,10 @@ echo 'Building the shared Flask image for EC2 amd64 and importing to private con
 docker build --platform linux/amd64 -t "$IMAGE" "$ROOT/apps/three-tier-api"
 docker save "$IMAGE" | remote 'sudo k3s ctr -n k8s.io images import -'
 
-echo 'Creating isolated namespace, runtime-only DB endpoint and DB Secret...'
+echo 'Creating isolated namespace, runtime-only DB/messaging endpoints and DB Secret...'
 remote 'sudo k3s kubectl apply -f -' < "$ROOT/kubernetes/k3s/namespace.yaml"
 remote "sudo k3s kubectl -n infra-lab create configmap db-endpoint --from-literal=host=$DB_IP --dry-run=client -o yaml | sudo k3s kubectl apply -f -"
+remote "sudo k3s kubectl -n infra-lab create configmap messaging-endpoint --from-literal=url=nats://$APP_IP:4222 --dry-run=client -o yaml | sudo k3s kubectl apply -f -"
 printf '%s' "$LAB_DB_PASSWORD" |
   remote 'sudo k3s kubectl -n infra-lab create secret generic db-auth --from-file=password=/dev/stdin --dry-run=client -o yaml | sudo k3s kubectl apply -f -'
 
