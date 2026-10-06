@@ -13,7 +13,7 @@ Terraform provisions a restricted three-tier AWS environment; Ansible configures
 | Verified scope | What the evidence establishes |
 | --- | --- |
 | AWS infrastructure | Both runtime modes were live-tested and fully torn down in September 2026. |
-| Current LabOps app | Python, isolated Docker/PostgreSQL, and real Chromium browser workflows pass in CI; these app changes **have not been re-deployed to AWS**. |
+| Current LabOps app | Python/Go, isolated Docker/PostgreSQL/JetStream, durable replay, and real Chromium browser workflows pass in CI; these app changes **have not been re-deployed to AWS**. |
 | Real security telemetry | Not connected. No active T-Pot honeypots, Splunk integration, automated response, or real-world attack feed is claimed. |
 
 ## Run LabOps locally (no AWS)
@@ -55,7 +55,7 @@ docker compose --env-file "$LABOPS_ENV" \
 python3 scripts/seed-labops-demo.py --run
 ```
 
-Open **[http://127.0.0.1:18080/dashboard](http://127.0.0.1:18080/dashboard)**, or the incident-specific URL printed by the seeder. Create an incident, change its triage status, attach a fictional `cowrie.login.failed` event, and inspect the updated investigation. Changes persist in the local PostgreSQL volume across container restarts.
+Open **[http://127.0.0.1:18080/dashboard](http://127.0.0.1:18080/dashboard)**, or the incident-specific URL printed by the seeder. Create an incident, change its triage status, attach a fictional `cowrie.login.failed` event, and inspect the updated investigation. PostgreSQL application state and JetStream's local file-backed event stream persist across container restarts.
 
 Stop the demo **without deleting its database**:
 
@@ -65,7 +65,7 @@ docker compose --env-file "$LABOPS_ENV" \
   -f apps/three-tier-api/compose.integration.yaml down
 ```
 
-Do **not** add `-v` unless you intend to remove the demo's PostgreSQL volume. The first-time password creation above is for a fresh demo; if you have an existing volume, reuse its original credentials. [Full LabOps behavior, restrictions, and CI screenshots →](docs/labops.md)
+Do **not** add `-v` unless you intend to remove both the demo's PostgreSQL and JetStream volumes. The first-time password creation above is for a fresh demo; if you have an existing volume, reuse its original credentials. [Full LabOps behavior, restrictions, and CI screenshots →](docs/labops.md)
 
 ## Historical live AWS validation
 
@@ -175,7 +175,7 @@ The DB and web Ansible plays finished with `failed=0`, then both returned `chang
 | Containers and Kubernetes | Docker build, private SSH image transfer, containerd import, k3s, Namespace, Deployment, Service, NodePort, health probes |
 | Application integration | Shared Flask source, dedicated PostgreSQL 16, DB-backed health API and app credentials supplied at runtime |
 | LabOps application | Versioned PostgreSQL incidents/events, manual synthetic SSH evidence ingestion with idempotent retry, browser-based triage and read-only source-IP investigation; locally and CI tested |
-| Event-driven integration | Local/CI Core NATS subject `labops.incident.created`, Flask publisher, Go subscriber, structured logs and PostgreSQL delivery persistence; JetStream durability and AWS broker deployment are future phases |
+| Event-driven integration | Local/CI JetStream file storage, publish acknowledgements and message IDs, durable explicit-ack Go consumer, retry/poison-event handling, PostgreSQL idempotency, and replay after worker plus broker restart; AWS broker deployment remains a future phase |
 | Security controls | Web /32, no public app/DB IP, explicit denied-path test, non-root containers, runtime-only Kubernetes Secret, encrypted EBS |
 | Storage testing | Test-only local-path PVC marker retained after Pod replacement; no DR claim |
 | CI and test automation | Python API tests, local Docker/PostgreSQL outage/recovery, Terraform/Ansible validation, offline k3s/cross-layer contract checks |
@@ -235,6 +235,6 @@ The original **September 22 systemd deployment** is pictured below. These images
 
 </details>
 
-**Implemented and live-tested on AWS:** the two infrastructure runtime modes and the checks documented above. **Implemented and verified locally/in CI:** LabOps incident management, synthetic event intake, the browser investigation workflow, and the Core-NATS Flask → Go worker → PostgreSQL event path. **Not yet implemented or verified:** JetStream durability/replay, a dedicated AWS broker host, live AWS deployment of the current LabOps application; real Splunk ingestion, VPC Flow Log/CloudTrail analysis, authentication/TLS for an externally accessible dashboard, security response; Kubernetes update/failure-injection exercises; CloudWatch alerting; independent PostgreSQL backup/rebuild with measured RPO/RTO. [Next proposed milestone: evaluate real Splunk telemetry →](https://github.com/BrentDean/cloud-infrastructure-automation/issues/9).
+**Implemented and live-tested on AWS:** the two infrastructure runtime modes and the checks documented above. **Implemented and verified locally/in CI:** LabOps incident management, synthetic event intake, the browser investigation workflow, and the JetStream Flask → durable Go consumer → PostgreSQL path, including replay after the worker is stopped and the NATS server is restarted. **Not yet implemented or verified:** a dedicated AWS broker host, Ansible deployment of NATS/the worker, live AWS deployment of the current LabOps application; real Splunk ingestion, VPC Flow Log/CloudTrail analysis, authentication/TLS for an externally accessible dashboard, security response; Kubernetes update/failure-injection exercises; CloudWatch alerting; independent PostgreSQL backup/rebuild with measured RPO/RTO. [Next proposed milestone: evaluate real Splunk telemetry →](https://github.com/BrentDean/cloud-infrastructure-automation/issues/9).
 
 The repository also includes [Ansible staging-server backups](ansible/backup.yml) and [infrastructure audits](ansible/audit.yml) for an **existing, separate Hetzner VPS**. The disposable AWS runner does **not** connect to or modify that server.

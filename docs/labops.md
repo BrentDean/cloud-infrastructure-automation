@@ -209,7 +209,7 @@ honeypot traffic, client data, credentials, or institutional records.
 ### Explore locally without AWS
 
 Follow the [README's local quickstart](../README.md#run-labops-locally-no-aws)
-to launch the real Flask/PostgreSQL dashboard, run both SQL migrations, and
+to launch the real Flask/PostgreSQL dashboard, run the versioned SQL migrations, and
 optionally seed four fictional incidents and seven fictional failed-login
 events. This demo requires Docker Compose and Python 3, not AWS or T-Pot.
 Its browser endpoint is http://127.0.0.1:18080/dashboard.
@@ -295,18 +295,20 @@ from a live honeypot, autonomous correlation or threat response. Authentication
 and TLS are necessary before external exposure or real-event intake.
 
 
-## Event-driven incident path: Core NATS + Go worker
+## Durable event path: JetStream + Go worker
 
-The first messaging milestone adds a **local/CI-only** asynchronous path without
+The messaging path is now **durable in the local/CI environment** without
 changing the verified AWS topology:
 
 ~~~text
 Flask incident creation
         |
-        | labops.incident.created
+        | JetStream publish + server acknowledgement
+        | Nats-Msg-Id: <event UUID>
         v
-      NATS
+LABOPS_EVENTS (file storage)
         |
+        | durable explicit-ack consumer
         v
  Go event-worker
         |
@@ -316,30 +318,49 @@ Flask incident creation
 
 After PostgreSQL commits a new incident, Flask publishes a compact JSON event
 containing an event UUID, the incident UUID, and `incident.created`. The
-publisher is enabled only when `NATS_URL` is set. The Compose environment sets
-that URL to the internal `nats` service; NATS has no published host port.
+Python NATS client uses JetStream publish rather than Core NATS and waits for
+the server's publish acknowledgement. The event UUID is also sent as
+`Nats-Msg-Id`, enabling broker-side duplicate suppression inside the stream's
+configured duplicate window.
 
-The Go service in `services/event-worker/` subscribes to
-`labops.incident.created`, rejects malformed or unexpected JSON, writes the
-original payload to PostgreSQL with a unique event ID, uses bounded database
-timeouts, emits structured JSON logs, reconnects to NATS, and shuts down on
-SIGTERM/SIGINT. The third idempotent migration is
-`apps/three-tier-api/migrations/0003_event_deliveries.sql`.
+The Go service owns the local stream/consumer configuration. It creates or
+updates `LABOPS_EVENTS` with single-replica **file storage**, a seven-day
+retention bound, message/byte limits, and a ten-minute duplicate window. Its
+durable `labops-event-worker` consumer filters
+`labops.incident.created`, uses explicit acknowledgements, an acknowledgement
+timeout, bounded pending work, and at most five delivery attempts.
 
-This phase intentionally uses **Core NATS**. A broker outage after the incident
-transaction commits is logged but does not change the already-committed HTTP
-result into a 503. That avoids telling a caller that incident creation failed
-when the row actually exists, but it also means this phase does **not** claim
-guaranteed delivery. JetStream persistence/replay and an outbox-style handoff
-belong to the next reliability milestone.
+A delivery is acknowledged only after PostgreSQL successfully records it.
+The worker uses JetStream `DoubleAck` so the acknowledgement itself is
+confirmed by the server. A transient PostgreSQL failure receives a delayed
+negative acknowledgement and can be redelivered. Invalid/poison JSON is
+terminated rather than retried indefinitely. If an acknowledgement is lost
+after the database insert, a redelivery is safe because
+`event_deliveries.event_id` is unique and the worker acknowledges the
+idempotent duplicate.
 
-The container integration test waits for the Go subscription, creates an
-incident through the real Flask API, and then asserts that exactly one matching
-`event_deliveries` row appears in PostgreSQL. Unit tests also cover publication
-ordering, broker failure semantics, malformed Go-consumer events, unknown JSON
-fields, and duplicate-store results. GitHub Actions runs both the Python and Go
-test suites before the existing browser/Compose integration exercise.
+The Compose NATS service stores JetStream data in its own named volume and
+does not publish the client or monitoring port to the host. CI performs the
+reliability exercise explicitly:
 
-This is not evidence of NATS running on AWS. No broker EC2 instance, AWS
-security-group rule, Ansible NATS role, JetStream storage, or live cloud
-verification is claimed by this milestone.
+1. Start Flask, PostgreSQL, NATS/JetStream, and the Go worker.
+2. Verify one ordinary event reaches PostgreSQL.
+3. Stop the worker.
+4. Create two new incidents and confirm their delivery rows are still absent.
+5. Restart the NATS server while those messages are queued.
+6. Start the worker again.
+7. Require both queued events to appear in PostgreSQL.
+
+That last sequence demonstrates that accepted events survive both consumer
+absence and a broker-process restart; they are not merely buffered in a live
+Core NATS process.
+
+The database commit and broker publish are still **not one atomic transaction**.
+If PostgreSQL commits but the subsequent JetStream publish itself fails, the API
+logs that failure and preserves the successful incident response rather than
+claiming the database write failed. A transactional outbox would be the next
+step if atomic database-to-broker handoff were required.
+
+This remains local/CI evidence only. No dedicated broker EC2 instance, AWS
+security-group rule, Ansible NATS/worker role, or live AWS JetStream run is
+claimed by this milestone.

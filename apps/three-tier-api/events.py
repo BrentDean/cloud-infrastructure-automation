@@ -1,4 +1,4 @@
-"""Best-effort Core NATS publication for LabOps domain events."""
+"""JetStream publication for LabOps domain events."""
 
 import asyncio
 import json
@@ -8,6 +8,11 @@ from uuid import uuid4
 import nats
 
 INCIDENT_CREATED_SUBJECT = "labops.incident.created"
+NATS_MSG_ID_HEADER = "Nats-Msg-Id"
+
+
+def _jetstream_headers(event):
+    return {NATS_MSG_ID_HEADER: event["event_id"]}
 
 
 async def _publish(nats_url, event):
@@ -19,11 +24,16 @@ async def _publish(nats_url, event):
             connect_timeout=1,
             max_reconnect_attempts=0,
         )
+        jetstream = connection.jetstream()
         payload = json.dumps(
             event, separators=(",", ":"), sort_keys=True
         ).encode("utf-8")
-        await connection.publish(INCIDENT_CREATED_SUBJECT, payload)
-        await connection.flush(timeout=1)
+        await jetstream.publish(
+            INCIDENT_CREATED_SUBJECT,
+            payload,
+            headers=_jetstream_headers(event),
+            timeout=2,
+        )
     finally:
         if connection is not None:
             await connection.close()
@@ -32,8 +42,10 @@ async def _publish(nats_url, event):
 def publish_incident_created(incident):
     """Publish after the incident transaction commits when NATS is configured.
 
-    Core NATS is deliberately best-effort here. The caller decides how to
-    handle publication failures; this function never mutates database state.
+    JetStream confirms broker persistence before this function returns. The
+    database commit and broker publish are still separate operations; the caller
+    deliberately keeps an already-committed incident successful if publishing
+    later fails.
     """
     nats_url = os.getenv("NATS_URL", "").strip()
     if not nats_url:

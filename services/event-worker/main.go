@@ -18,9 +18,16 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
-const incidentCreatedSubject = "labops.incident.created"
+const (
+	incidentCreatedSubject = "labops.incident.created"
+	eventStreamName        = "LABOPS_EVENTS"
+	durableConsumerName    = "labops-event-worker"
+)
+
+var errInvalidEvent = errors.New("invalid event")
 
 type incidentCreated struct {
 	EventID    string `json:"event_id"`
@@ -30,6 +37,14 @@ type incidentCreated struct {
 
 type deliveryStore interface {
 	Record(context.Context, string, string, []byte) (bool, error)
+}
+
+type eventMessage interface {
+	Subject() string
+	Data() []byte
+	DoubleAck(context.Context) error
+	NakWithDelay(time.Duration) error
+	TermWithReason(string) error
 }
 
 type postgresStore struct {
@@ -54,29 +69,33 @@ func (store postgresStore) Record(
 	return tag.RowsAffected() == 1, nil
 }
 
+func invalidEvent(message string) error {
+	return fmt.Errorf("%w: %s", errInvalidEvent, message)
+}
+
 func decodeIncidentCreated(payload []byte) (incidentCreated, error) {
 	var event incidentCreated
 	if len(payload) == 0 || len(payload) > 16*1024 {
-		return event, errors.New("event payload must contain 1-16384 bytes")
+		return event, invalidEvent("payload must contain 1-16384 bytes")
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&event); err != nil {
-		return event, fmt.Errorf("decode event: %w", err)
+		return event, fmt.Errorf("%w: decode event: %v", errInvalidEvent, err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return event, errors.New("event payload must contain one JSON object")
+		return event, invalidEvent("payload must contain one JSON object")
 	}
 
 	if event.EventType != "incident.created" {
-		return event, errors.New("unexpected event_type")
+		return event, invalidEvent("unexpected event_type")
 	}
 	if !validUUID(event.EventID) {
-		return event, errors.New("event_id must be a UUID")
+		return event, invalidEvent("event_id must be a UUID")
 	}
 	if !validUUID(event.IncidentID) {
-		return event, errors.New("incident_id must be a UUID")
+		return event, invalidEvent("incident_id must be a UUID")
 	}
 	return event, nil
 }
@@ -86,7 +105,7 @@ func recordMessage(
 ) (incidentCreated, bool, error) {
 	var zero incidentCreated
 	if subject != incidentCreatedSubject {
-		return zero, false, errors.New("unexpected NATS subject")
+		return zero, false, invalidEvent("unexpected NATS subject")
 	}
 	event, err := decodeIncidentCreated(payload)
 	if err != nil {
@@ -97,6 +116,34 @@ func recordMessage(
 		return zero, false, err
 	}
 	return event, inserted, nil
+}
+
+func handleMessage(
+	ctx context.Context, store deliveryStore, message eventMessage,
+) (incidentCreated, bool, string, error) {
+	var zero incidentCreated
+	event, inserted, err := recordMessage(
+		ctx, store, message.Subject(), message.Data(),
+	)
+	if err != nil {
+		if errors.Is(err, errInvalidEvent) {
+			if termErr := message.TermWithReason("invalid LabOps event"); termErr != nil {
+				return zero, false, "terminate_failed", errors.Join(err, termErr)
+			}
+			return zero, false, "terminated", err
+		}
+		if nakErr := message.NakWithDelay(time.Second); nakErr != nil {
+			return zero, false, "retry_failed", errors.Join(err, nakErr)
+		}
+		return zero, false, "retry", err
+	}
+
+	ackCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := message.DoubleAck(ackCtx); err != nil {
+		return event, inserted, "ack_failed", fmt.Errorf("double ack: %w", err)
+	}
+	return event, inserted, "acked", nil
 }
 
 func validUUID(value string) bool {
@@ -145,6 +192,39 @@ func postgresDSN() (string, error) {
 	query.Set("sslmode", env("PGSSLMODE", "disable"))
 	connectionURL.RawQuery = query.Encode()
 	return connectionURL.String(), nil
+}
+
+func streamConfig() jetstream.StreamConfig {
+	return jetstream.StreamConfig{
+		Name:              eventStreamName,
+		Description:       "LabOps durable domain events",
+		Subjects:          []string{incidentCreatedSubject},
+		Retention:         jetstream.LimitsPolicy,
+		MaxConsumers:      10,
+		MaxMsgs:           10000,
+		MaxBytes:          64 * 1024 * 1024,
+		Discard:           jetstream.DiscardOld,
+		MaxAge:            7 * 24 * time.Hour,
+		MaxMsgsPerSubject: -1,
+		MaxMsgSize:        16 * 1024,
+		Storage:           jetstream.FileStorage,
+		Replicas:          1,
+		Duplicates:        10 * time.Minute,
+	}
+}
+
+func consumerConfig() jetstream.ConsumerConfig {
+	return jetstream.ConsumerConfig{
+		Durable:       durableConsumerName,
+		Description:   "Persist LabOps incident.created events to PostgreSQL",
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		AckWait:       10 * time.Second,
+		MaxDeliver:    5,
+		FilterSubject: incidentCreatedSubject,
+		ReplayPolicy:  jetstream.ReplayInstantPolicy,
+		MaxAckPending: 64,
+	}
 }
 
 func connectPostgres(
@@ -203,6 +283,24 @@ func connectNATS(
 	}
 }
 
+func configureJetStream(
+	ctx context.Context, connection *nats.Conn,
+) (jetstream.Consumer, error) {
+	js, err := jetstream.New(connection)
+	if err != nil {
+		return nil, fmt.Errorf("create JetStream context: %w", err)
+	}
+	stream, err := js.CreateOrUpdateStream(ctx, streamConfig())
+	if err != nil {
+		return nil, fmt.Errorf("configure stream: %w", err)
+	}
+	consumer, err := stream.CreateOrUpdateConsumer(ctx, consumerConfig())
+	if err != nil {
+		return nil, fmt.Errorf("configure consumer: %w", err)
+	}
+	return consumer, nil
+}
+
 func run(ctx context.Context, logger *slog.Logger) error {
 	dsn, err := postgresDSN()
 	if err != nil {
@@ -220,42 +318,72 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 	defer connection.Close()
 
-	store := postgresStore{pool: pool}
-	subscription, err := connection.Subscribe(incidentCreatedSubject, func(message *nats.Msg) {
-		messageCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		event, inserted, err := recordMessage(
-			messageCtx, store, message.Subject, message.Data,
-		)
-		if err != nil {
-			logger.Error(
-				"event processing failed",
-				"subject", message.Subject,
-				"error", err.Error(),
-			)
-			return
-		}
-		logger.Info(
-			"event delivery recorded",
-			"subject", message.Subject,
-			"event_id", event.EventID,
-			"incident_id", event.IncidentID,
-			"inserted", inserted,
-		)
-	})
+	setupCtx, cancelSetup := context.WithTimeout(ctx, 10*time.Second)
+	consumer, err := configureJetStream(setupCtx, connection)
+	cancelSetup()
 	if err != nil {
-		return fmt.Errorf("subscribe: %w", err)
-	}
-	if err := connection.FlushTimeout(2 * time.Second); err != nil {
-		return fmt.Errorf("establish subscription: %w", err)
+		return err
 	}
 
-	logger.Info("event worker ready", "subject", incidentCreatedSubject)
+	store := postgresStore{pool: pool}
+	consumeContext, err := consumer.Consume(
+		func(message jetstream.Msg) {
+			messageCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			event, inserted, outcome, err := handleMessage(messageCtx, store, message)
+			if err != nil {
+				level := slog.LevelError
+				if errors.Is(err, errInvalidEvent) {
+					level = slog.LevelWarn
+				}
+				logger.Log(
+					context.Background(),
+					level,
+					"event processing did not complete normally",
+					"subject", message.Subject(),
+					"outcome", outcome,
+					"error", err.Error(),
+				)
+				return
+			}
+
+			metadata, metadataErr := message.Metadata()
+			deliveryAttempt := uint64(0)
+			if metadataErr == nil {
+				deliveryAttempt = metadata.NumDelivered
+			}
+			logger.Info(
+				"event delivery recorded",
+				"subject", message.Subject(),
+				"event_id", event.EventID,
+				"incident_id", event.IncidentID,
+				"inserted", inserted,
+				"delivery_attempt", deliveryAttempt,
+			)
+		},
+		jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
+			logger.Warn("JetStream consume error", "error", err.Error())
+		}),
+	)
+	if err != nil {
+		return fmt.Errorf("consume JetStream events: %w", err)
+	}
+
+	logger.Info(
+		"event worker ready",
+		"subject", incidentCreatedSubject,
+		"stream", eventStreamName,
+		"consumer", durableConsumerName,
+	)
+
 	<-ctx.Done()
-
-	if err := subscription.Drain(); err != nil {
-		logger.Warn("subscription drain failed", "error", err.Error())
+	consumeContext.Drain()
+	select {
+	case <-consumeContext.Closed():
+	case <-time.After(5 * time.Second):
+		logger.Warn("JetStream consumer drain timed out")
+		consumeContext.Stop()
 	}
 	if err := connection.Drain(); err != nil {
 		logger.Warn("NATS drain failed", "error", err.Error())
