@@ -38,6 +38,8 @@ jobs:
           web ansible_connection=local
           [lab_app]
           app ansible_connection=local
+          [lab_broker]
+          broker ansible_connection=local
           [lab_db]
           db ansible_connection=local
           INVENTORY
@@ -85,8 +87,8 @@ jobs:
           LAB_EVENT_WORKER_BINARY: /tmp/labops-event-worker
         run: |
           cat > /tmp/messaging-inventory.ini <<'INVENTORY'
-          [lab_app]
-          app ansible_connection=local lab_private_ip=127.0.0.1
+          [lab_broker]
+          broker ansible_connection=local lab_private_ip=127.0.0.1
           [lab_db]
           db ansible_connection=local lab_private_ip=127.0.0.1
           INVENTORY
@@ -98,7 +100,7 @@ jobs:
           python - <<'PY'
           import pathlib, re
           text = pathlib.Path('/tmp/messaging-second.log').read_text()
-          if not re.search(r'(?m)^app\s+:\s+ok=\d+\s+changed=0\s+unreachable=0\s+failed=0\b', text):
+          if not re.search(r'(?m)^broker\s+:\s+ok=\d+\s+changed=0\s+unreachable=0\s+failed=0\b', text):
               raise SystemExit('Messaging-role idempotency failed')
           print('PASS: second messaging Ansible run changed=0')
           PY

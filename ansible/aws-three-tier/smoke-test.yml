@@ -1,5 +1,5 @@
 ---
-- name: Validate private application to private database connectivity
+- name: Validate private application network paths
   hosts: app
   gather_facts: false
   tasks:
@@ -11,7 +11,27 @@
         timeout: 20
         state: started
 
-    - name: Application host can reach its private NATS listener
+    - name: Application can reach private NATS broker
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['broker'].lab_private_ip }}"
+        port: 4222
+        connect_timeout: 2
+        timeout: 20
+        state: started
+
+- name: Validate private broker and event worker
+  hosts: broker
+  gather_facts: false
+  tasks:
+    - name: Broker host can connect to PostgreSQL
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['db'].lab_private_ip }}"
+        port: 5432
+        connect_timeout: 2
+        timeout: 20
+        state: started
+
+    - name: Broker host has a live private NATS listener
       ansible.builtin.wait_for:
         host: "{{ lab_private_ip }}"
         port: 4222
@@ -50,7 +70,7 @@
 
     - name: Web cannot reach NATS directly
       ansible.builtin.wait_for:
-        host: "{{ hostvars['app'].lab_private_ip }}"
+        host: "{{ hostvars['broker'].lab_private_ip }}"
         port: 4222
         connect_timeout: 2
         timeout: 7
@@ -69,7 +89,6 @@
           - api_health.json.status == 'ok'
           - api_health.json.db == 'connected'
           - api_health.json.db_result == 1
-
 
     - name: Create one synthetic incident through Nginx for messaging verification
       ansible.builtin.uri:

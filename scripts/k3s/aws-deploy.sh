@@ -4,16 +4,17 @@
 set -Eeuo pipefail
 umask 077
 
-if [[ $# -ne 4 ]]; then
-  echo "Usage: $0 <ephemeral-ssh-config> <app-private-ip> <db-private-ip> <evidence-dir>" >&2
+if [[ $# -ne 5 ]]; then
+  echo "Usage: $0 <ephemeral-ssh-config> <app-private-ip> <broker-private-ip> <db-private-ip> <evidence-dir>" >&2
   exit 2
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SSH_CONFIG="$1"
 APP_IP="$2"
-DB_IP="$3"
-EVIDENCE_DIR="$4"
+BROKER_IP="$3"
+DB_IP="$4"
+EVIDENCE_DIR="$5"
 IMAGE="localhost/three-tier-api:pr2"
 ANSIBLE_PLAYBOOK="${ANSIBLE_PLAYBOOK:-$HOME/.local/bin/ansible-playbook}"
 
@@ -32,13 +33,13 @@ resolved="$(ssh -F "$SSH_CONFIG" -G aws-lab-app | awk '$1 == "hostname" {print $
   echo "Refusing SSH target: expected private app $APP_IP, got $resolved" >&2
   exit 1
 }
-python3 - "$APP_IP" "$DB_IP" <<'PY'
+python3 - "$APP_IP" "$BROKER_IP" "$DB_IP" <<'PY'
 import ipaddress
 import sys
 for address in sys.argv[1:]:
     ip = ipaddress.ip_address(address)
     if ip.version != 4 or not ip.is_private:
-        raise SystemExit("Expected the Terraform-created private app/database IPv4")
+        raise SystemExit("Expected Terraform-created private app/broker/database IPv4 addresses")
 PY
 
 remote() { ssh -T -F "$SSH_CONFIG" aws-lab-app "$@"; }
@@ -55,7 +56,7 @@ docker save "$IMAGE" | remote 'sudo k3s ctr -n k8s.io images import -'
 echo 'Creating isolated namespace, runtime-only DB/messaging endpoints and DB Secret...'
 remote 'sudo k3s kubectl apply -f -' < "$ROOT/kubernetes/k3s/namespace.yaml"
 remote "sudo k3s kubectl -n infra-lab create configmap db-endpoint --from-literal=host=$DB_IP --dry-run=client -o yaml | sudo k3s kubectl apply -f -"
-remote "sudo k3s kubectl -n infra-lab create configmap messaging-endpoint --from-literal=url=nats://$APP_IP:4222 --dry-run=client -o yaml | sudo k3s kubectl apply -f -"
+remote "sudo k3s kubectl -n infra-lab create configmap messaging-endpoint --from-literal=url=nats://$BROKER_IP:4222 --dry-run=client -o yaml | sudo k3s kubectl apply -f -"
 printf '%s' "$LAB_DB_PASSWORD" |
   remote 'sudo k3s kubectl -n infra-lab create secret generic db-auth --from-file=password=/dev/stdin --dry-run=client -o yaml | sudo k3s kubectl apply -f -'
 

@@ -140,11 +140,12 @@ terraform -chdir="$WORK/terraform" apply -input=false -auto-approve -no-color "$
 WEB_IP="$(terraform -chdir="$WORK/terraform" output -raw web_public_ip)"
 WEB_PRIV="$(terraform -chdir="$WORK/terraform" output -raw web_private_ip)"
 APP_IP="$(terraform -chdir="$WORK/terraform" output -raw app_private_ip)"
+BROKER_IP="$(terraform -chdir="$WORK/terraform" output -raw broker_private_ip)"
 DB_IP="$(terraform -chdir="$WORK/terraform" output -raw db_private_ip)"
-python3 - "$WEB_IP" "$WEB_PRIV" "$APP_IP" "$DB_IP" <<'PY'
+python3 - "$WEB_IP" "$WEB_PRIV" "$APP_IP" "$BROKER_IP" "$DB_IP" <<'PY'
 import ipaddress, sys
-web, webpriv, app, db = (ipaddress.ip_address(x) for x in sys.argv[1:])
-if not web.is_global or not all(ip.is_private for ip in (webpriv, app, db)):
+web, webpriv, app, broker, db = (ipaddress.ip_address(x) for x in sys.argv[1:])
+if not web.is_global or not all(ip.is_private for ip in (webpriv, app, broker, db)):
     raise SystemExit('Unexpected public/private EC2 IP allocation')
 PY
 
@@ -161,6 +162,16 @@ Host aws-lab-web
   ConnectTimeout 8
 Host aws-lab-app
   HostName $APP_IP
+  User ubuntu
+  IdentityFile $WORK/id_ed25519
+  IdentitiesOnly yes
+  BatchMode yes
+  StrictHostKeyChecking accept-new
+  UserKnownHostsFile $WORK/known_hosts
+  ConnectTimeout 8
+  ProxyCommand ssh -F $SSH_CONFIG -W %h:%p aws-lab-web
+Host aws-lab-broker
+  HostName $BROKER_IP
   User ubuntu
   IdentityFile $WORK/id_ed25519
   IdentitiesOnly yes
@@ -186,18 +197,21 @@ cat > "$WORK/inventory.ini" <<EOF_INVENTORY
 web ansible_host=aws-lab-web lab_private_ip=$WEB_PRIV
 [lab_app]
 app ansible_host=aws-lab-app lab_private_ip=$APP_IP
+[lab_broker]
+broker ansible_host=aws-lab-broker lab_private_ip=$BROKER_IP
 [lab_db]
 db ansible_host=aws-lab-db lab_private_ip=$DB_IP
 [aws_lab:children]
 lab_web
 lab_app
+lab_broker
 lab_db
 [aws_lab:vars]
 ansible_user=ubuntu
 ansible_python_interpreter=/usr/bin/python3
 EOF_INVENTORY
 
-for role in web app db; do
+for role in web app broker db; do
   echo "Waiting for $role SSH ..."
   ready=0
   for (( attempt=1; attempt<=60; attempt++ )); do
@@ -221,14 +235,14 @@ if [[ "$LAB_APP_RUNTIME" == k3s ]]; then
 fi
 "$ANSIBLE_PLAYBOOK" "${ANSIBLE_ARGS[@]}" "${CONFIGURE_ARGS[@]}" "$ANSIBLE/configure.yml" | tee "$WORK/evidence/configure-first.log"
 if [[ "$LAB_APP_RUNTIME" == k3s ]]; then
-  "$ROOT/scripts/k3s/aws-deploy.sh" "$SSH_CONFIG" "$APP_IP" "$DB_IP" "$WORK/evidence" \
+  "$ROOT/scripts/k3s/aws-deploy.sh" "$SSH_CONFIG" "$APP_IP" "$BROKER_IP" "$DB_IP" "$WORK/evidence" \
     | tee "$WORK/evidence/k3s-deploy.log"
 fi
 "$ANSIBLE_PLAYBOOK" "${ANSIBLE_ARGS[@]}" "${CONFIGURE_ARGS[@]}" "$ANSIBLE/configure.yml" | tee "$WORK/evidence/configure-second.log"
 python3 - "$WORK/evidence/configure-second.log" "$LAB_APP_RUNTIME" <<'PY'
 import pathlib, re, sys
 s = pathlib.Path(sys.argv[1]).read_text()
-for host in ('web', 'app', 'db'):
+for host in ('web', 'broker', 'db') if sys.argv[2] == 'k3s' else ('web', 'app', 'broker', 'db'):
     p = rf'(?m)^\s*{host}\s*:\s*ok=\d+\s+changed=0\s+unreachable=0\s+failed=0\b'
     if not re.search(p, s):
         raise SystemExit(f'Idempotency verification failed for {host}')
@@ -252,7 +266,7 @@ PY
 
 printf 'RUN_ID=%s\nREGION=%s\nAPP_RUNTIME=%s\nPUBLIC_WEB_IP=%s\nEXPIRES_AT=%s\n' \
   "$RUN_ID" "$AWS_REGION" "$LAB_APP_RUNTIME" "$WEB_IP" "$EXPIRES_AT" > "$WORK/evidence/run-summary.txt"
-echo "PASS: three-tier provisioning, Ansible messaging services, idempotency, connectivity, network restrictions."
+echo "PASS: three-tier application plus private broker provisioning, idempotency, connectivity, network restrictions."
 echo "Evidence: $WORK/evidence"
 if (( LAB_HOLD_MINUTES > 0 )); then
   echo "Holding the lab for $LAB_HOLD_MINUTES minute(s); Ctrl-C triggers destroy."

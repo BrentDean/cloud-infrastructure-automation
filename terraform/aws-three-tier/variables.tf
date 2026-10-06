@@ -36,7 +36,7 @@ variable "ssh_public_key" {
 variable "instance_type" {
   type        = string
   default     = "t3.small"
-  description = "EC2 instance type for all three roles; override with TF_VAR_instance_type."
+  description = "EC2 instance type for web, broker, DB, and the systemd app host; override with TF_VAR_instance_type."
 }
 
 variable "app_runtime" {

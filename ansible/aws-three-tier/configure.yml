@@ -31,6 +31,14 @@
         state: present
       notify: Restart PostgreSQL
 
+    - name: Restrict event-worker database access to the broker host
+      ansible.builtin.lineinfile:
+        path: /etc/postgresql/16/main/pg_hba.conf
+        line: "host labdb labuser {{ hostvars['broker'].lab_private_ip }}/32 scram-sha-256"
+        insertafter: '^# IPv4 local connections:'
+        state: present
+      notify: Restart PostgreSQL
+
     - name: Check for application database role
       ansible.builtin.command:
         argv: [runuser, -u, postgres, --, psql, -tAc, "SELECT 1 FROM pg_roles WHERE rolname = 'labuser'"]
@@ -193,12 +201,12 @@
         state: restarted
 
 - name: Configure private NATS JetStream and Go event worker
-  hosts: app
+  hosts: broker
   tags: [messaging]
   become: true
   gather_facts: true
   pre_tasks:
-    - name: Wait for application-host cloud-init before messaging setup
+    - name: Wait for broker-host cloud-init before messaging setup
       ansible.builtin.command: cloud-init status --wait
       changed_when: false
   roles:
@@ -301,7 +309,7 @@
           PGDATABASE=labdb
           PGUSER=labuser
           PGPASSWORD={{ lookup('env', 'LAB_DB_PASSWORD') }}
-          NATS_URL=nats://{{ lab_private_ip }}:4222
+          NATS_URL=nats://{{ hostvars['broker'].lab_private_ip }}:4222
       no_log: true
       notify: Restart application
 

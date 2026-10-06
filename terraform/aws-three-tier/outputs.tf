@@ -7,6 +7,9 @@ output "web_private_ip" {
 output "app_private_ip" {
   value = aws_instance.role["app"].private_ip
 }
+output "broker_private_ip" {
+  value = aws_instance.role["broker"].private_ip
+}
 output "db_private_ip" {
   value = aws_instance.role["db"].private_ip
 }
