@@ -1,4 +1,4 @@
-"""Unit contracts for the synchronous Flask-to-NATS publisher wrapper."""
+"""Unit contracts for the synchronous Flask-to-JetStream publisher wrapper."""
 
 import importlib.util
 from pathlib import Path
@@ -42,3 +42,15 @@ def test_builds_incident_created_event(monkeypatch):
     assert event["incident_id"] == INCIDENT_ID
     assert event["event_type"] == "incident.created"
     assert str(UUID(event["event_id"])) == event["event_id"]
+
+
+def test_jetstream_message_id_uses_event_id():
+    event = {
+        "event_id": "11111111-2222-4333-8444-555555555555",
+        "incident_id": INCIDENT_ID,
+        "event_type": "incident.created",
+    }
+
+    assert events._jetstream_headers(event) == {
+        "Nats-Msg-Id": event["event_id"],
+    }

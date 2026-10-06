@@ -15,7 +15,14 @@ services:
 
   nats:
     image: nats:2.15.0-alpine
-    command: ["--name", "labops-local"]
+    command:
+      - --name
+      - labops-local
+      - --jetstream
+      - --store_dir
+      - /data/jetstream
+    volumes:
+      - natsdata:/data
 
   api:
     build:
@@ -53,3 +60,4 @@ services:
 
 volumes:
   pgdata:
+  natsdata:

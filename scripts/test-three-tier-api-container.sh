@@ -132,7 +132,7 @@ done
   echo "Expected one persisted NATS delivery for incident $incident_id; found $delivery_count" >&2
   exit 1
 }
-echo 'PASS: incident.created crossed NATS and was persisted by the Go worker'
+echo 'PASS: incident.created crossed JetStream and was persisted by the Go worker'
 
 curl -fsS --max-time 5 "$BASE_URL/api/v1/incidents/$incident_id" |
   python3 -c 'import json,sys; assert json.load(sys.stdin)["incident"]["title"]=="Synthetic SSH alert"'
@@ -147,6 +147,58 @@ item=json.load(sys.stdin)["incident"]
 assert item["status"]=="investigating" and item["notes"]=="Reviewed synthetic events"
 '
 
+
+echo '=== JetStream durable replay across worker stop and broker restart ==='
+docker compose -f "$COMPOSE" stop worker >/dev/null
+
+queued_one="$(curl -fsS --max-time 8 -X POST "$BASE_URL/api/v1/incidents" \
+  -H 'Content-Type: application/json' \
+  --data '{"title":"Queued incident one","description":"Created while worker is stopped","severity":"medium"}')"
+queued_one_id="$(printf '%s' "$queued_one" | python3 -c 'import json,sys,uuid; print(uuid.UUID(json.load(sys.stdin)["incident"]["id"]))')"
+queued_two="$(curl -fsS --max-time 8 -X POST "$BASE_URL/api/v1/incidents" \
+  -H 'Content-Type: application/json' \
+  --data '{"title":"Queued incident two","description":"Also created while worker is stopped","severity":"low"}')"
+queued_two_id="$(printf '%s' "$queued_two" | python3 -c 'import json,sys,uuid; print(uuid.UUID(json.load(sys.stdin)["incident"]["id"]))')"
+
+queued_before="$(docker compose -f "$COMPOSE" exec -T postgres \
+  psql -U labuser -d labdb -tAc "SELECT count(*) FROM event_deliveries WHERE payload->>'incident_id' IN ('$queued_one_id', '$queued_two_id');")"
+[[ "$queued_before" == "0" ]] || {
+  echo "Expected queued incidents to remain unconsumed while worker is stopped; found $queued_before deliveries" >&2
+  exit 1
+}
+
+# JetStream uses file storage. Restart the broker before the worker to prove
+# accepted messages survive more than a stopped subscriber process.
+docker compose -f "$COMPOSE" restart nats >/dev/null
+docker compose -f "$COMPOSE" start worker >/dev/null
+
+queued_after=0
+for ((attempt=1; attempt<=45; attempt++)); do
+  queued_after="$(docker compose -f "$COMPOSE" exec -T postgres \
+    psql -U labuser -d labdb -tAc "SELECT count(*) FROM event_deliveries WHERE payload->>'incident_id' IN ('$queued_one_id', '$queued_two_id');")"
+  if [[ "$queued_after" == "2" ]]; then
+    break
+  fi
+  sleep 1
+done
+[[ "$queued_after" == "2" ]] || {
+  echo "Expected two JetStream-replayed deliveries after worker/broker recovery; found $queued_after" >&2
+  exit 1
+}
+echo 'PASS: JetStream retained two incidents across worker stop and NATS restart, then durable consumer replayed both'
+
+# Keep the pre-existing dashboard browser fixture deterministic. The two
+# reliability-only incidents have served their purpose and are removed from
+# this isolated CI database after replay has been proven.
+docker compose -f "$COMPOSE" exec -T postgres \
+  psql -U labuser -d labdb -v ON_ERROR_STOP=1 >/dev/null <<SQL
+BEGIN;
+DELETE FROM event_deliveries
+WHERE payload->>'incident_id' IN ('$queued_one_id', '$queued_two_id');
+DELETE FROM incidents
+WHERE id IN ('$queued_one_id'::uuid, '$queued_two_id'::uuid);
+COMMIT;
+SQL
 
 echo '=== Attach synthetic Cowrie event; retry and conflict must not duplicate ==='
 event_body='{"source":"cowrie","event_type":"cowrie.login.failed","source_event_id":"synthetic-run-1-attempt-001","source_ip":"198.51.100.23","username":"root","observed_at":"2026-09-24T12:00:00Z"}'
