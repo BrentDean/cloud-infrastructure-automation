@@ -9,6 +9,7 @@ import psycopg2
 from flask import Flask, jsonify, render_template, request, url_for
 
 import db
+import events
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024
@@ -136,6 +137,17 @@ def create_incident():
         incident = db.create_incident(title, description, severity)
     except psycopg2.Error:
         return _db_error()
+
+    # Core NATS is intentionally best-effort in this first event-driven phase.
+    # Never report a failed incident creation after PostgreSQL has committed it.
+    try:
+        events.publish_incident_created(incident)
+    except Exception:
+        app.logger.exception(
+            "Incident persisted but NATS publication failed",
+            extra={"incident_id": incident["id"]},
+        )
+
     response = jsonify(incident=incident)
     response.status_code = 201
     response.headers["Location"] = url_for("get_incident", incident_id=incident["id"])

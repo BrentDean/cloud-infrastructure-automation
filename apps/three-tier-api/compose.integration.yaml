@@ -13,6 +13,10 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  nats:
+    image: nats:2.15.0-alpine
+    command: ["--name", "labops-local"]
+
   api:
     build:
       context: .
@@ -21,11 +25,31 @@ services:
       PGDATABASE: labdb
       PGUSER: labuser
       PGPASSWORD: ${LAB_DB_PASSWORD:?Set LAB_DB_PASSWORD for integration tests}
+      NATS_URL: nats://nats:4222
     depends_on:
       postgres:
         condition: service_healthy
+      nats:
+        condition: service_started
     ports:
       - "127.0.0.1:${API_TEST_PORT:-18080}:8000"
+
+  worker:
+    build:
+      context: ../../services/event-worker
+    environment:
+      PGHOST: postgres
+      PGDATABASE: labdb
+      PGUSER: labuser
+      PGPASSWORD: ${LAB_DB_PASSWORD:?Set LAB_DB_PASSWORD for integration tests}
+      PGSSLMODE: disable
+      NATS_URL: nats://nats:4222
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    restart: on-failure
 
 volumes:
   pgdata:

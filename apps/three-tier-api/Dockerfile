@@ -9,7 +9,7 @@ COPY requirements.txt .
 RUN python -m pip install --no-cache-dir -r requirements.txt \
     && useradd --system --uid 10001 --create-home appuser
 
-COPY --chown=appuser:appuser app.py db.py ./
+COPY --chown=appuser:appuser app.py db.py events.py ./
 COPY --chown=appuser:appuser templates/ ./templates/
 COPY --chown=appuser:appuser static/ ./static/
 USER 10001:10001

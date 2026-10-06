@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE="$ROOT/apps/three-tier-api/compose.integration.yaml"
 MIGRATION="$ROOT/apps/three-tier-api/migrations/0001_incidents.sql"
 EVENT_MIGRATION="$ROOT/apps/three-tier-api/migrations/0002_security_events.sql"
+DELIVERY_MIGRATION="$ROOT/apps/three-tier-api/migrations/0003_event_deliveries.sql"
 export COMPOSE_PROJECT_NAME="three-tier-api-test-$$"
 export LAB_DB_PASSWORD="${LAB_DB_PASSWORD:-$(python3 -c 'import secrets; print(secrets.token_hex(24))')}"
 export API_TEST_PORT="${API_TEST_PORT:-18080}"
@@ -18,7 +19,7 @@ done
 cleanup() {
   local status=$?
   if (( status != 0 )); then
-    docker compose -f "$COMPOSE" logs --tail 100 api postgres >&2 || true
+    docker compose -f "$COMPOSE" logs --tail 100 api worker nats postgres >&2 || true
   fi
   docker compose -f "$COMPOSE" down -v --remove-orphans >/dev/null 2>&1 || true
 }
@@ -26,7 +27,7 @@ trap cleanup EXIT
 
 # Apply schema before Flask starts, exactly as the AWS DB play does. Repeat to
 # establish migration idempotency without touching a real server.
-docker compose -f "$COMPOSE" up -d postgres
+docker compose -f "$COMPOSE" up -d postgres nats
 for ((attempt=1; attempt<=60; attempt++)); do
   if docker compose -f "$COMPOSE" exec -T postgres \
       psql -U labuser -d labdb -tAc 'SELECT 1' >/dev/null 2>&1; then
@@ -43,9 +44,11 @@ for pass in first second; do
     psql -U labuser -d labdb -v ON_ERROR_STOP=1 < "$MIGRATION" >/dev/null
   docker compose -f "$COMPOSE" exec -T postgres \
     psql -U labuser -d labdb -v ON_ERROR_STOP=1 < "$EVENT_MIGRATION" >/dev/null
+  docker compose -f "$COMPOSE" exec -T postgres \
+    psql -U labuser -d labdb -v ON_ERROR_STOP=1 < "$DELIVERY_MIGRATION" >/dev/null
 done
 
-docker compose -f "$COMPOSE" up -d --build api
+docker compose -f "$COMPOSE" up -d --build api worker
 
 wait_for_ready() {
   local attempt
@@ -61,7 +64,22 @@ wait_for_ready() {
   return 1
 }
 
+wait_for_worker() {
+  local attempt
+  for ((attempt=1; attempt<=60; attempt++)); do
+    if docker compose -f "$COMPOSE" logs worker 2>/dev/null |
+        grep -q '"msg":"event worker ready"'; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo 'Timed out waiting for the Go event worker subscription.' >&2
+  docker compose -f "$COMPOSE" logs --tail 60 worker nats >&2
+  return 1
+}
+
 wait_for_ready
+wait_for_worker
 curl -fsS --max-time 5 "$BASE_URL/health" |
   python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["status"]=="ok" and d["db_result"]==1'
 
@@ -99,6 +117,23 @@ assert record["status"]=="open" and record["source"]=="manual"
 assert record["title"]=="Synthetic SSH alert" and record["severity"]=="high"
 print(uuid.UUID(record["id"]))
 ')"
+
+echo '=== Flask -> NATS -> Go worker -> PostgreSQL event delivery ==='
+delivery_count=0
+for ((attempt=1; attempt<=30; attempt++)); do
+  delivery_count="$(docker compose -f "$COMPOSE" exec -T postgres \
+    psql -U labuser -d labdb -tAc "SELECT count(*) FROM event_deliveries WHERE subject='labops.incident.created' AND payload->>'incident_id'='$incident_id' AND payload->>'event_type'='incident.created' AND payload ? 'event_id';")"
+  if [[ "$delivery_count" == "1" ]]; then
+    break
+  fi
+  sleep 1
+done
+[[ "$delivery_count" == "1" ]] || {
+  echo "Expected one persisted NATS delivery for incident $incident_id; found $delivery_count" >&2
+  exit 1
+}
+echo 'PASS: incident.created crossed NATS and was persisted by the Go worker'
+
 curl -fsS --max-time 5 "$BASE_URL/api/v1/incidents/$incident_id" |
   python3 -c 'import json,sys; assert json.load(sys.stdin)["incident"]["title"]=="Synthetic SSH alert"'
 curl -fsS --max-time 5 "$BASE_URL/api/v1/incidents?limit=2" |

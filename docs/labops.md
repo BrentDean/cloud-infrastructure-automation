@@ -293,3 +293,53 @@ real PostgreSQL persistence, browser refresh, and mobile layout. The
 **Boundary:** This is synthetic manual evidence entry; it is not ingestion
 from a live honeypot, autonomous correlation or threat response. Authentication
 and TLS are necessary before external exposure or real-event intake.
+
+
+## Event-driven incident path: Core NATS + Go worker
+
+The first messaging milestone adds a **local/CI-only** asynchronous path without
+changing the verified AWS topology:
+
+~~~text
+Flask incident creation
+        |
+        | labops.incident.created
+        v
+      NATS
+        |
+        v
+ Go event-worker
+        |
+        v
+ PostgreSQL event_deliveries
+~~~
+
+After PostgreSQL commits a new incident, Flask publishes a compact JSON event
+containing an event UUID, the incident UUID, and `incident.created`. The
+publisher is enabled only when `NATS_URL` is set. The Compose environment sets
+that URL to the internal `nats` service; NATS has no published host port.
+
+The Go service in `services/event-worker/` subscribes to
+`labops.incident.created`, rejects malformed or unexpected JSON, writes the
+original payload to PostgreSQL with a unique event ID, uses bounded database
+timeouts, emits structured JSON logs, reconnects to NATS, and shuts down on
+SIGTERM/SIGINT. The third idempotent migration is
+`apps/three-tier-api/migrations/0003_event_deliveries.sql`.
+
+This phase intentionally uses **Core NATS**. A broker outage after the incident
+transaction commits is logged but does not change the already-committed HTTP
+result into a 503. That avoids telling a caller that incident creation failed
+when the row actually exists, but it also means this phase does **not** claim
+guaranteed delivery. JetStream persistence/replay and an outbox-style handoff
+belong to the next reliability milestone.
+
+The container integration test waits for the Go subscription, creates an
+incident through the real Flask API, and then asserts that exactly one matching
+`event_deliveries` row appears in PostgreSQL. Unit tests also cover publication
+ordering, broker failure semantics, malformed Go-consumer events, unknown JSON
+fields, and duplicate-store results. GitHub Actions runs both the Python and Go
+test suites before the existing browser/Compose integration exercise.
+
+This is not evidence of NATS running on AWS. No broker EC2 instance, AWS
+security-group rule, Ansible NATS role, JetStream storage, or live cloud
+verification is claimed by this milestone.
