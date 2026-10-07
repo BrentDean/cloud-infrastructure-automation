@@ -1,0 +1,157 @@
+---
+- name: Validate private application network paths
+  hosts: app
+  gather_facts: false
+  tasks:
+    - name: Application can connect to PostgreSQL
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['db'].lab_private_ip }}"
+        port: 5432
+        connect_timeout: 2
+        timeout: 20
+        state: started
+
+    - name: Application can reach private NATS broker
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['broker'].lab_private_ip }}"
+        port: 4222
+        connect_timeout: 2
+        timeout: 20
+        state: started
+
+- name: Validate private broker and event worker
+  hosts: broker
+  gather_facts: false
+  tasks:
+    - name: Broker host can connect to PostgreSQL
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['db'].lab_private_ip }}"
+        port: 5432
+        connect_timeout: 2
+        timeout: 20
+        state: started
+
+    - name: Broker host has a live private NATS listener
+      ansible.builtin.wait_for:
+        host: "{{ lab_private_ip }}"
+        port: 4222
+        connect_timeout: 2
+        timeout: 20
+        state: started
+
+    - name: Require NATS and event worker systemd services
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - nats-server
+          - labops-event-worker
+      changed_when: false
+
+    - name: Run Nagios-compatible JetStream health plugin
+      ansible.builtin.command:
+        argv:
+          - /usr/local/libexec/labops-monitoring/check_labops_nats.py
+          - --warning-ms
+          - '2000'
+          - --critical-ms
+          - '5000'
+      changed_when: false
+
+    - name: Run Nagios-compatible event-worker service plugin
+      ansible.builtin.command:
+        argv:
+          - /usr/local/libexec/labops-monitoring/check_labops_systemd.py
+          - --unit
+          - labops-event-worker
+      changed_when: false
+
+- name: Validate web network boundaries and end-to-end API
+  hosts: web
+  gather_facts: false
+  tasks:
+    - name: Web can reach application HTTP port
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['app'].lab_private_ip }}"
+        port: "{{ lab_app_port | default(8000) | int }}"
+        connect_timeout: 2
+        timeout: 20
+        state: started
+
+    - name: Web cannot reach PostgreSQL directly
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['db'].lab_private_ip }}"
+        port: 5432
+        connect_timeout: 2
+        timeout: 7
+        state: stopped
+
+    - name: Web cannot reach NATS directly
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['broker'].lab_private_ip }}"
+        port: 4222
+        connect_timeout: 2
+        timeout: 7
+        state: stopped
+
+    - name: Nginx forwards to application and application queries PostgreSQL
+      ansible.builtin.uri:
+        url: http://127.0.0.1/health
+        return_content: true
+        status_code: 200
+      register: api_health
+
+    - name: Require database-backed health response
+      ansible.builtin.assert:
+        that:
+          - api_health.json.status == 'ok'
+          - api_health.json.db == 'connected'
+          - api_health.json.db_result == 1
+
+    - name: Run Nagios-compatible end-to-end HTTP plugin
+      ansible.builtin.command:
+        argv:
+          - /usr/local/libexec/labops-monitoring/check_labops_http.py
+          - --url
+          - http://127.0.0.1/health
+          - --warning-ms
+          - '2000'
+          - --critical-ms
+          - '5000'
+      changed_when: false
+
+    - name: Create one synthetic incident through Nginx for messaging verification
+      ansible.builtin.uri:
+        url: http://127.0.0.1/api/v1/incidents
+        method: POST
+        body_format: json
+        body:
+          title: Synthetic AWS messaging smoke
+          description: Disposable lab event used only to verify JetStream delivery.
+          severity: low
+        status_code: 201
+        return_content: true
+      register: messaging_smoke_incident
+
+- name: Verify JetStream consumer persisted the synthetic incident event
+  hosts: db
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Require one event-delivery row for the smoke incident
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -d
+          - labdb
+          - -tAc
+          - "SELECT count(*) FROM event_deliveries WHERE payload->>'incident_id' = '{{ hostvars['web'].messaging_smoke_incident.json.incident.id }}'"
+      register: messaging_delivery
+      changed_when: false
+      retries: 20
+      delay: 1
+      until: messaging_delivery.stdout | trim == '1'

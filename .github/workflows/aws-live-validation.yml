@@ -1,0 +1,264 @@
+name: AWS Live Validation
+run-name: AWS Live Validation · ${{ inputs.runtime }} · ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime:
+        description: Application runtime to validate
+        required: true
+        type: choice
+        default: k3s
+        options:
+          - k3s
+          - systemd
+      confirmation:
+        description: Type DEPLOY to authorize creation of billable AWS lab resources
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aws-live-validation
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Non-billable preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require explicit live-run confirmation
+        shell: bash
+        run: |
+          test "${{ inputs.confirmation }}" = "DEPLOY" || {
+            echo 'Refusing live AWS run: confirmation must be exactly DEPLOY.' >&2
+            exit 2
+          }
+
+      - uses: actions/checkout@v7.0.1
+
+      - uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: '1.16.3'
+          terraform_wrapper: false
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: '1.26.x'
+          cache: true
+          cache-dependency-path: services/event-worker/go.sum
+
+      - name: Install Ansible Core
+        run: python -m pip install 'ansible-core>=2.18,<2.20'
+
+      - name: Validate repository before AWS authorization
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive terraform/aws-three-tier
+          terraform -chdir=terraform/aws-three-tier init -backend=false -input=false -no-color
+          terraform -chdir=terraform/aws-three-tier validate -no-color
+          bash -n             scripts/run-aws-three-tier.sh             scripts/destroy-aws-three-tier.sh             scripts/verify-aws-three-tier-cleanup.sh             scripts/build-event-worker.sh             scripts/k3s/aws-deploy.sh             scripts/k3s/aws-verify.sh
+          ansible-playbook -i 'localhost,' -c local ansible/aws-three-tier/configure.yml --syntax-check
+          scripts/build-event-worker.sh /tmp/labops-event-worker-preflight
+          echo 'PASS: non-billable Terraform, Ansible, shell, and Go-worker preflight completed'
+
+  live-validation:
+    name: Controlled AWS deployment, validation, and teardown
+    needs: preflight
+    environment: aws-live-lab
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_PAGER: ''
+      LAB_APP_RUNTIME: ${{ inputs.runtime }}
+      LAB_HOLD_MINUTES: '0'
+      ANSIBLE_NOCOLOR: '1'
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: '1.16.3'
+          terraform_wrapper: false
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: '1.26.x'
+          cache: true
+          cache-dependency-path: services/event-worker/go.sum
+
+      - name: Install Ansible Core
+        run: python -m pip install 'ansible-core>=2.18,<2.20'
+
+      - name: Initialize private run workspace
+        shell: bash
+        run: |
+          echo "LAB_RUN_ROOT=$RUNNER_TEMP/aws-three-tier" >> "$GITHUB_ENV"
+
+      - name: Configure short-lived AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: labops-live-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+
+      - name: Verify AWS identity guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${{ vars.AWS_ROLE_ARN }}"
+          test -n "${{ vars.AWS_ACCOUNT_ID }}"
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          arn="$(aws sts get-caller-identity --query Arn --output text)"
+          [[ "$account" == "${{ vars.AWS_ACCOUNT_ID }}" ]]
+          [[ "$arn" != *:root ]]
+          echo "PASS: OIDC session is in the configured AWS account and is not root"
+
+      - name: Run current architecture end to end
+        id: live
+        shell: bash
+        run: |
+          set +e
+          ANSIBLE_PLAYBOOK="$(command -v ansible-playbook)"             ./scripts/run-aws-three-tier.sh --run 2>&1 |
+            tee "$RUNNER_TEMP/live-validation.log"
+          status=${PIPESTATUS[0]}
+          printf '%s\n' "$status" > "$RUNNER_TEMP/live-status"
+          echo "runner_exit=$status" >> "$GITHUB_OUTPUT"
+          # Do not stop here: cleanup verification must always run.
+          exit 0
+
+      - name: Discover private run state
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_dir="$(find "$LAB_RUN_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'run.*'             -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+          if [[ -z "$run_dir" ]]; then
+            echo 'No run directory was created; AWS apply could not have started.'
+            exit 0
+          fi
+          echo "LAB_RUN_DIR=$run_dir" >> "$GITHUB_ENV"
+          if [[ -f "$run_dir/terraform/lab.auto.tfvars.json" ]]; then
+            run_id="$(python3 - "$run_dir/terraform/lab.auto.tfvars.json" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1]))["run_id"])
+          PY
+            )"
+            echo "LAB_RUN_ID=$run_id" >> "$GITHUB_ENV"
+            echo "Discovered disposable run: $run_id"
+          fi
+
+      - name: Retry Terraform cleanup if state is not empty
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          status=0
+          if [[ -n "${LAB_RUN_DIR:-}" && -f "$LAB_RUN_DIR/terraform/terraform.tfstate" ]]; then
+            if terraform -chdir="$LAB_RUN_DIR/terraform" state list 2>/dev/null | grep -q .; then
+              echo 'Terraform state still contains resources; retrying destroy.'
+              ./scripts/destroy-aws-three-tier.sh "$LAB_RUN_DIR" || status=$?
+            else
+              echo 'PASS: Terraform state is empty after runner teardown'
+            fi
+          fi
+          printf '%s\n' "$status" > "$RUNNER_TEMP/destroy-retry-status"
+          exit 0
+
+      - name: Verify no tagged AWS lab resources remain
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          status=0
+          if [[ -n "${LAB_RUN_ID:-}" ]]; then
+            ./scripts/verify-aws-three-tier-cleanup.sh "$LAB_RUN_ID"               2>&1 | tee "$RUNNER_TEMP/cleanup-verification.txt"
+            status=${PIPESTATUS[0]}
+          else
+            echo 'No RunId exists; cloud resource creation did not start.'               | tee "$RUNNER_TEMP/cleanup-verification.txt"
+          fi
+          printf '%s\n' "$status" > "$RUNNER_TEMP/cleanup-status"
+          exit 0
+
+      - name: Build sanitized validation evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/public-evidence"
+          mkdir -p "$out"
+
+          live_status="$(cat "$RUNNER_TEMP/live-status" 2>/dev/null || printf '1')"
+          cleanup_status="$(cat "$RUNNER_TEMP/cleanup-status" 2>/dev/null || printf '0')"
+
+          {
+            echo '# LabOps AWS Live Validation'
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Runtime: \`${LAB_APP_RUNTIME}\`"
+            echo "- Region: \`${AWS_REGION}\`"
+            echo "- Run ID: \`${LAB_RUN_ID:-not-created}\`"
+            echo "- Infrastructure validation exit: \`${live_status}\`"
+            echo "- Residual-resource verification exit: \`${cleanup_status}\`"
+            echo
+            echo '## Verified checks'
+            if [[ -f "$RUNNER_TEMP/live-validation.log" ]]; then
+              grep -E '(^PASS:|^PASS[[:space:]])' "$RUNNER_TEMP/live-validation.log"                 | sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/[redacted-ip]/g'                 | sort -u                 | sed 's/^/- /' || true
+            fi
+            if [[ -f "$RUNNER_TEMP/cleanup-verification.txt" ]]; then
+              grep -E '^(PASS|FAIL):' "$RUNNER_TEMP/cleanup-verification.txt"                 | sed 's/^/- /' || true
+            fi
+          } | tee "$out/validation-summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ -n "${LAB_RUN_DIR:-}" ]]; then
+            for file in external-health.json event-worker.sha256; do
+              src="$LAB_RUN_DIR/evidence/$file"
+              [[ -f "$src" ]] && cp "$src" "$out/$file"
+            done
+          fi
+          [[ -f "$RUNNER_TEMP/cleanup-verification.txt" ]] &&
+            cp "$RUNNER_TEMP/cleanup-verification.txt" "$out/cleanup-verification.txt"
+
+      - name: Upload sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: aws-live-validation-${{ github.run_id }}
+          path: ${{ runner.temp }}/public-evidence
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Require validation and cleanup success
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          live_status="$(cat "$RUNNER_TEMP/live-status" 2>/dev/null || printf '1')"
+          cleanup_status="$(cat "$RUNNER_TEMP/cleanup-status" 2>/dev/null || printf '0')"
+          [[ "$live_status" == '0' ]] || {
+            echo "FAIL: live architecture validation exited $live_status" >&2
+            exit 1
+          }
+          [[ "$cleanup_status" == '0' ]] || {
+            echo "FAIL: residual-resource verification exited $cleanup_status" >&2
+            exit 1
+          }
+          echo 'PASS: live architecture validation completed and AWS cleanup was verified'

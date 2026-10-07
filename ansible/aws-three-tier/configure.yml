@@ -1,0 +1,431 @@
+---
+- name: Configure PostgreSQL on private database instance
+  hosts: db
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+
+    - name: Install PostgreSQL 16
+      ansible.builtin.apt:
+        name: postgresql-16
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: 300
+
+    - name: Allow PostgreSQL to listen on the database private IP
+      ansible.builtin.lineinfile:
+        path: /etc/postgresql/16/main/postgresql.conf
+        regexp: '^\s*#?\s*listen_addresses\s*='
+        line: "listen_addresses = '127.0.0.1,{{ lab_private_ip }}'"
+      notify: Restart PostgreSQL
+
+    - name: Restrict application database access to the application host
+      ansible.builtin.lineinfile:
+        path: /etc/postgresql/16/main/pg_hba.conf
+        line: "host labdb labuser {{ hostvars['app'].lab_private_ip }}/32 scram-sha-256"
+        insertafter: '^# IPv4 local connections:'
+        state: present
+      notify: Restart PostgreSQL
+
+    - name: Restrict event-worker database access to the broker host
+      ansible.builtin.lineinfile:
+        path: /etc/postgresql/16/main/pg_hba.conf
+        line: "host labdb labuser {{ hostvars['broker'].lab_private_ip }}/32 scram-sha-256"
+        insertafter: '^# IPv4 local connections:'
+        state: present
+      notify: Restart PostgreSQL
+
+    - name: Check for application database role
+      ansible.builtin.command:
+        argv: [runuser, -u, postgres, --, psql, -tAc, "SELECT 1 FROM pg_roles WHERE rolname = 'labuser'"]
+      register: role_present
+      changed_when: false
+
+    - name: Create application database role
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -v
+          - ON_ERROR_STOP=1
+          - -c
+          - "CREATE ROLE labuser LOGIN PASSWORD '{{ lookup('env', 'LAB_DB_PASSWORD') }}'"
+      when: role_present.stdout | trim != '1'
+      no_log: true
+
+    - name: Check for application database
+      ansible.builtin.command:
+        argv: [runuser, -u, postgres, --, psql, -tAc, "SELECT 1 FROM pg_database WHERE datname = 'labdb'"]
+      register: database_present
+      changed_when: false
+
+    - name: Create application database
+      ansible.builtin.command:
+        argv: [runuser, -u, postgres, --, createdb, -O, labuser, labdb]
+      when: database_present.stdout | trim != '1'
+
+    - name: Ensure PostgreSQL is enabled and started
+      ansible.builtin.systemd_service:
+        name: postgresql
+        enabled: true
+        state: started
+
+    - name: Create directory for versioned LabOps database migrations
+      ansible.builtin.file:
+        path: /usr/local/share/aws-three-tier
+        state: directory
+        mode: '0755'
+
+    - name: Install first LabOps incident schema migration
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../apps/three-tier-api/migrations/0001_incidents.sql"
+        dest: /usr/local/share/aws-three-tier/0001_incidents.sql
+        mode: '0644'
+
+    - name: Check whether the LabOps incident schema already exists
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -d
+          - labdb
+          - -tAc
+          - "SELECT to_regclass('public.incidents')"
+      register: incident_schema
+      changed_when: false
+
+    - name: Apply first LabOps migration exactly once per disposable database
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -v
+          - ON_ERROR_STOP=1
+          - -d
+          - labdb
+          - -f
+          - /usr/local/share/aws-three-tier/0001_incidents.sql
+      when: incident_schema.stdout | trim != 'incidents'
+
+    - name: Install LabOps security events schema migration
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../apps/three-tier-api/migrations/0002_security_events.sql"
+        dest: /usr/local/share/aws-three-tier/0002_security_events.sql
+        mode: '0644'
+
+    - name: Check whether LabOps security events schema already exists
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -d
+          - labdb
+          - -tAc
+          - "SELECT to_regclass('public.security_events')"
+      register: security_events_schema
+      changed_when: false
+
+    - name: Apply LabOps security events migration exactly once
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -v
+          - ON_ERROR_STOP=1
+          - -d
+          - labdb
+          - -f
+          - /usr/local/share/aws-three-tier/0002_security_events.sql
+      when: security_events_schema.stdout | trim != 'security_events'
+
+    - name: Install LabOps event-delivery schema migration
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../apps/three-tier-api/migrations/0003_event_deliveries.sql"
+        dest: /usr/local/share/aws-three-tier/0003_event_deliveries.sql
+        mode: '0644'
+
+    - name: Check whether LabOps event-delivery schema already exists
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -d
+          - labdb
+          - -tAc
+          - "SELECT to_regclass('public.event_deliveries')"
+      register: event_deliveries_schema
+      changed_when: false
+
+    - name: Apply LabOps event-delivery migration exactly once
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -v
+          - ON_ERROR_STOP=1
+          - -d
+          - labdb
+          - -f
+          - /usr/local/share/aws-three-tier/0003_event_deliveries.sql
+      when: event_deliveries_schema.stdout | trim != 'event_deliveries'
+
+  handlers:
+    - name: Restart PostgreSQL
+      ansible.builtin.systemd_service:
+        name: postgresql
+        state: restarted
+
+- name: Configure private NATS JetStream and Go event worker
+  hosts: broker
+  tags: [messaging]
+  become: true
+  gather_facts: true
+  pre_tasks:
+    - name: Wait for broker-host cloud-init before messaging setup
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+  roles:
+    - role: nats
+    - role: event_worker
+    - role: monitoring_checks
+
+- name: Deploy private Python application
+  hosts: app
+  tags: [systemd_app]
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+
+    - name: Install Python web service dependencies
+      ansible.builtin.apt:
+        name:
+          - gunicorn
+          - python3-flask
+          - python3-psycopg2
+          - python3-venv
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: 300
+
+    - name: Create application directory
+      ansible.builtin.file:
+        path: /opt/aws-three-tier
+        state: directory
+        mode: '0755'
+
+    - name: Create application configuration directory
+      ansible.builtin.file:
+        path: /etc/aws-three-tier
+        state: directory
+        mode: '0700'
+
+    - name: Create application virtual environment with system packages
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -m
+          - venv
+          - --system-site-packages
+          - /opt/aws-three-tier/venv
+        creates: /opt/aws-three-tier/venv/bin/python
+
+    - name: Install pinned Python NATS client into application environment
+      ansible.builtin.pip:
+        name: nats-py==2.16.0
+        executable: /opt/aws-three-tier/venv/bin/pip
+      notify: Restart application
+
+    - name: Install shared database-backed health API
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../apps/three-tier-api/app.py"
+        dest: /opt/aws-three-tier/app.py
+        mode: '0644'
+      notify: Restart application
+
+    - name: Install shared LabOps incident persistence module
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../apps/three-tier-api/db.py"
+        dest: /opt/aws-three-tier/db.py
+        mode: '0644'
+      notify: Restart application
+
+    - name: Install shared LabOps JetStream publisher
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../apps/three-tier-api/events.py"
+        dest: /opt/aws-three-tier/events.py
+        mode: '0644'
+      notify: Restart application
+
+    - name: Install LabOps dashboard template
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../apps/three-tier-api/templates/"
+        dest: /opt/aws-three-tier/templates/
+        mode: '0644'
+        directory_mode: '0755'
+      notify: Restart application
+
+    - name: Install LabOps dashboard static assets
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../apps/three-tier-api/static/"
+        dest: /opt/aws-three-tier/static/
+        mode: '0644'
+        directory_mode: '0755'
+      notify: Restart application
+
+    - name: Write private database credentials
+      ansible.builtin.copy:
+        dest: /etc/aws-three-tier/app.env
+        mode: '0600'
+        content: |
+          PGHOST={{ hostvars['db'].lab_private_ip }}
+          PGDATABASE=labdb
+          PGUSER=labuser
+          PGPASSWORD={{ lookup('env', 'LAB_DB_PASSWORD') }}
+          NATS_URL=nats://{{ hostvars['broker'].lab_private_ip }}:4222
+      no_log: true
+      notify: Restart application
+
+    - name: Install application systemd unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/aws-three-tier-app.service
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Ephemeral AWS three-tier API
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=www-data
+          EnvironmentFile=/etc/aws-three-tier/app.env
+          WorkingDirectory=/opt/aws-three-tier
+          ExecStart=/opt/aws-three-tier/venv/bin/python -m gunicorn --bind {{ lab_private_ip }}:8000 --workers 2 app:app
+          Restart=on-failure
+          RestartSec=2
+
+          [Install]
+          WantedBy=multi-user.target
+      register: app_unit
+      notify: Restart application
+
+    - name: Reload systemd if the application unit changed
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      when: app_unit.changed
+
+    - name: Enable application service
+      ansible.builtin.systemd_service:
+        name: aws-three-tier-app
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Restart application
+      ansible.builtin.systemd_service:
+        name: aws-three-tier-app
+        state: restarted
+
+- name: Configure public reverse proxy and SSH bastion
+  hosts: web
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+
+    - name: Install Nagios/Icinga-compatible LabOps checks
+      ansible.builtin.include_role:
+        name: monitoring_checks
+
+    - name: Install Nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: 300
+
+    - name: Remove default site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Reload Nginx
+
+    - name: Configure application reverse proxy
+      ansible.builtin.copy:
+        dest: /etc/nginx/sites-enabled/aws-three-tier.conf
+        mode: '0644'
+        content: |
+          server {
+              listen 80 default_server;
+              server_name _;
+              location = /health {
+                  proxy_pass http://{{ hostvars['app'].lab_private_ip }}:{{ lab_app_port | default(8000) }}/health;
+                  proxy_connect_timeout 4s;
+                  proxy_read_timeout 5s;
+              }
+              # The operator /32 is enforced by the existing web security group.
+              # Do not expose incident writes beyond that boundary without TLS/auth.
+              location ^~ /api/v1/ {
+                  client_max_body_size 16k;
+                  proxy_pass http://{{ hostvars['app'].lab_private_ip }}:{{ lab_app_port | default(8000) }};
+                  proxy_connect_timeout 4s;
+                  proxy_read_timeout 10s;
+              }
+              # One operator-only browser entry point and its local static assets.
+              location = /dashboard {
+                  proxy_pass http://{{ hostvars['app'].lab_private_ip }}:{{ lab_app_port | default(8000) }}/dashboard;
+                  proxy_connect_timeout 4s;
+                  proxy_read_timeout 10s;
+              }
+              location ^~ /static/labops/ {
+                  proxy_pass http://{{ hostvars['app'].lab_private_ip }}:{{ lab_app_port | default(8000) }};
+                  proxy_connect_timeout 4s;
+                  proxy_read_timeout 10s;
+              }
+              location / { return 404; }
+          }
+      notify: Reload Nginx
+
+    - name: Ensure Nginx is enabled and started
+      ansible.builtin.systemd_service:
+        name: nginx
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Reload Nginx
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: reloaded

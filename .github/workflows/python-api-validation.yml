@@ -1,0 +1,61 @@
+name: Shared Python API Validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  app-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+          cache-dependency-path: services/event-worker/go.sum
+      - name: Install application and test dependencies
+        run: python -m pip install -r apps/three-tier-api/requirements.txt 'pytest>=8,<10'
+      - name: Python contract tests
+        working-directory: apps/three-tier-api
+        run: python -m pytest -q tests
+      - name: Nagios/Icinga-compatible plugin tests
+        run: python -m pytest -q monitoring/tests
+      - name: Go event worker tests
+        working-directory: services/event-worker
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+          go mod verify
+          go test ./...
+          go vet ./...
+          unformatted="$(gofmt -l .)"
+          test -z "$unformatted" || { echo "gofmt required for:"; echo "$unformatted"; exit 1; }
+      - name: Validate shell script
+        run: bash -n scripts/test-three-tier-api-container.sh
+      - name: Validate dashboard JavaScript syntax
+        run: node --check apps/three-tier-api/static/labops/dashboard.js
+      - name: Install Chromium for real browser UI tests
+        run: |
+          python -m pip install 'playwright>=1.55,<2'
+          python -m playwright install --with-deps chromium
+      - name: Isolated Docker Compose and Chromium dashboard integration test
+        env:
+          LABOPS_BROWSER_TEST: '1'
+        run: bash scripts/test-three-tier-api-container.sh
+      - name: Upload synthetic dashboard screenshot evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: labops-browser-preview
+          path: artifacts/dashboard/*.png
+          if-no-files-found: ignore
+          retention-days: 14

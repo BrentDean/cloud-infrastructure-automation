@@ -1,0 +1,11 @@
+---
+nats_version: "2.15.0"
+nats_arch: "amd64"
+nats_sha256: "5d2c51caca950333aba84911df7d377f826f3a59ec36061c6539105084f65c92"
+nats_bind_host: "{{ lab_private_ip }}"
+nats_client_port: 4222
+nats_monitor_host: "127.0.0.1"
+nats_monitor_port: 8222
+nats_store_dir: "/var/lib/nats/jetstream"
+nats_max_memory_store: "128MB"
+nats_max_file_store: "1GB"

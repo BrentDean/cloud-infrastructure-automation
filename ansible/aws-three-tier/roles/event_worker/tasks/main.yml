@@ -1,0 +1,88 @@
+---
+- name: Require a controller-built Go worker artifact
+  ansible.builtin.assert:
+    that:
+      - event_worker_binary_src | length > 0
+      - event_worker_pg_password | length > 0
+    fail_msg: "LAB_EVENT_WORKER_BINARY and LAB_DB_PASSWORD must be set before deployment."
+  no_log: true
+
+- name: Create event-worker service group
+  ansible.builtin.group:
+    name: "{{ event_worker_group }}"
+    system: true
+    state: present
+
+- name: Create event-worker service user
+  ansible.builtin.user:
+    name: "{{ event_worker_user }}"
+    group: "{{ event_worker_group }}"
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+    state: present
+
+- name: Create event-worker installation directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ event_worker_install_dir }}", owner: root, group: root, mode: '0755' }
+    - { path: "{{ event_worker_config_dir }}", owner: root, group: root, mode: '0700' }
+
+- name: Install controller-built event-worker binary
+  ansible.builtin.copy:
+    src: "{{ event_worker_binary_src }}"
+    dest: "{{ event_worker_install_dir }}/event-worker"
+    owner: root
+    group: root
+    mode: '0755'
+  notify: Restart event worker
+
+- name: Write private event-worker runtime environment
+  ansible.builtin.template:
+    src: event-worker.env.j2
+    dest: "{{ event_worker_config_dir }}/worker.env"
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+  notify: Restart event worker
+
+- name: Install hardened event-worker systemd unit
+  ansible.builtin.template:
+    src: labops-event-worker.service.j2
+    dest: /etc/systemd/system/labops-event-worker.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload systemd for event worker
+    - Restart event worker
+
+- name: Apply event-worker unit and configuration changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start event worker
+  ansible.builtin.systemd_service:
+    name: labops-event-worker
+    enabled: true
+    state: started
+
+- name: Require event worker to initialize its durable consumer
+  ansible.builtin.command:
+    argv:
+      - journalctl
+      - -u
+      - labops-event-worker
+      - -n
+      - '100'
+      - --no-pager
+  register: worker_journal
+  changed_when: false
+  retries: 20
+  delay: 1
+  until: '"event worker ready" in worker_journal.stdout'

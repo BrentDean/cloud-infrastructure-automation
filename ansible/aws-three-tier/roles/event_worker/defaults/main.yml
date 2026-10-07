@@ -1,0 +1,12 @@
+---
+event_worker_user: "labops-worker"
+event_worker_group: "labops-worker"
+event_worker_binary_src: "{{ lookup('env', 'LAB_EVENT_WORKER_BINARY') }}"
+event_worker_install_dir: "/opt/labops-event-worker"
+event_worker_config_dir: "/etc/labops-event-worker"
+event_worker_pg_host: "{{ hostvars['db'].lab_private_ip }}"
+event_worker_pg_port: 5432
+event_worker_pg_database: "labdb"
+event_worker_pg_user: "labuser"
+event_worker_pg_password: "{{ lookup('env', 'LAB_DB_PASSWORD') }}"
+event_worker_nats_url: "nats://{{ lab_private_ip }}:4222"

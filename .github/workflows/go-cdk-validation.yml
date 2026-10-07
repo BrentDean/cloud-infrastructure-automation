@@ -1,0 +1,69 @@
+name: Go AWS CDK Validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synth-test:
+    name: Go CDK tests and synthesis (no AWS deployment)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cdk/operations-monitoring
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache-dependency-path: cdk/operations-monitoring/go.sum
+      - name: Verify committed Go module graph
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+          go mod verify
+      - name: Go CDK unit tests
+        run: go test ./...
+      - name: Go vet
+        run: go vet ./...
+      - name: Require gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          test -z "$unformatted" || {
+            echo "gofmt required for:"
+            echo "$unformatted"
+            exit 1
+          }
+      - name: Synthesize CloudFormation without AWS credentials
+        env:
+          CDK_DEFAULT_ACCOUNT: "111111111111"
+          CDK_DEFAULT_REGION: us-east-1
+        run: |
+          rm -rf cdk.out
+          go run .
+          test -f cdk.out/LabOpsOperationsMonitoring.template.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          template = json.loads(
+              Path("cdk.out/LabOpsOperationsMonitoring.template.json").read_text()
+          )
+          resources = template["Resources"]
+          alarms = [v for v in resources.values() if v["Type"] == "AWS::CloudWatch::Alarm"]
+          topics = [v for v in resources.values() if v["Type"] == "AWS::SNS::Topic"]
+          dashboards = [v for v in resources.values() if v["Type"] == "AWS::CloudWatch::Dashboard"]
+          assert len(alarms) == 4
+          assert len(topics) == 1
+          assert len(dashboards) == 1
+          assert all(a["Properties"]["MetricName"] == "StatusCheckFailed" for a in alarms)
+          assert set(template["Parameters"]) >= {
+              "WebInstanceId", "AppInstanceId", "BrokerInstanceId", "DbInstanceId"
+          }
+          print("PASS: Go CDK synthesized 4 EC2 alarms, encrypted SNS topic, dashboard and Terraform-instance parameters")
+          PY

@@ -1,0 +1,120 @@
+---
+- name: Require the supported amd64 host architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_architecture in ['x86_64', 'amd64']
+    fail_msg: "This lab role currently pins the NATS linux-amd64 release."
+
+- name: Install NATS runtime prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - tar
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+
+- name: Create NATS service group
+  ansible.builtin.group:
+    name: nats
+    system: true
+    state: present
+
+- name: Create NATS service user
+  ansible.builtin.user:
+    name: nats
+    group: nats
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+    state: present
+
+- name: Create NATS configuration and storage directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/nats, owner: root, group: nats, mode: '0750' }
+    - { path: /var/lib/nats, owner: nats, group: nats, mode: '0750' }
+    - { path: /var/lib/nats/jetstream, owner: nats, group: nats, mode: '0750' }
+    - { path: /usr/local/src, owner: root, group: root, mode: '0755' }
+
+- name: Download pinned NATS server release with SHA-256 verification
+  ansible.builtin.get_url:
+    url: "https://github.com/nats-io/nats-server/releases/download/v{{ nats_version }}/nats-server-v{{ nats_version }}-linux-{{ nats_arch }}.tar.gz"
+    dest: "/usr/local/src/nats-server-v{{ nats_version }}-linux-{{ nats_arch }}.tar.gz"
+    checksum: "sha256:{{ nats_sha256 }}"
+    owner: root
+    group: root
+    mode: '0644'
+    timeout: 60
+
+- name: Extract pinned NATS server release exactly once
+  ansible.builtin.unarchive:
+    src: "/usr/local/src/nats-server-v{{ nats_version }}-linux-{{ nats_arch }}.tar.gz"
+    dest: /usr/local/src
+    remote_src: true
+    creates: "/usr/local/src/nats-server-v{{ nats_version }}-linux-{{ nats_arch }}/nats-server"
+
+- name: Install NATS server binary
+  ansible.builtin.copy:
+    src: "/usr/local/src/nats-server-v{{ nats_version }}-linux-{{ nats_arch }}/nats-server"
+    dest: /usr/local/bin/nats-server
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0755'
+  notify: Restart NATS
+
+- name: Render private NATS JetStream configuration
+  ansible.builtin.template:
+    src: nats-server.conf.j2
+    dest: /etc/nats/nats-server.conf
+    owner: root
+    group: nats
+    mode: '0640'
+  notify: Restart NATS
+
+- name: Validate NATS configuration before service restart
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/nats-server
+      - -t
+      - -c
+      - /etc/nats/nats-server.conf
+  changed_when: false
+
+- name: Install hardened NATS systemd unit
+  ansible.builtin.template:
+    src: nats-server.service.j2
+    dest: /etc/systemd/system/nats-server.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload systemd for NATS
+    - Restart NATS
+
+- name: Apply NATS unit and configuration changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start NATS
+  ansible.builtin.systemd_service:
+    name: nats-server
+    enabled: true
+    state: started
+
+- name: Require JetStream-enabled NATS health
+  ansible.builtin.uri:
+    url: "http://{{ nats_monitor_host }}:{{ nats_monitor_port }}/healthz?js-enabled-only=true"
+    status_code: 200
+    return_content: true
+  register: nats_health
+  changed_when: false
+  retries: 20
+  delay: 1
+  until: nats_health.status == 200

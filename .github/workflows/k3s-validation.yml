@@ -1,0 +1,41 @@
+name: AWS Three-Tier k3s Mode Validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  aws-k3s-static-validation:
+    name: AWS Terraform, k3s Ansible and manifests (no cloud deployment)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.16.3'
+      - name: Terraform formatting
+        run: terraform fmt -check -recursive terraform/aws-three-tier
+      - name: Initialize AWS module without any credentials or remote state
+        working-directory: terraform/aws-three-tier
+        run: terraform init -backend=false -input=false
+      - name: Validate existing AWS three-tier module including opt-in k3s mode
+        working-directory: terraform/aws-three-tier
+        run: terraform validate -no-color
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install offline Kubernetes and Ansible validators
+        run: python -m pip install 'PyYAML>=6,<7' 'ansible-core>=2.18,<2.20'
+      - name: Validate AWS k3s Kubernetes manifests (no cluster)
+        run: python scripts/k3s/validate_manifests.py
+      - name: Verify cross-layer AWS + Ansible + Kubernetes + runner contracts
+        run: python scripts/validate_architecture.py
+      - name: Validate app-tier k3s Ansible syntax (no SSH)
+        run: ansible-playbook -i 'app,' ansible/k3s/install.yml --syntax-check
+      - name: Validate operator and ephemeral AWS runner scripts
+        run: bash -n scripts/k3s/*.sh scripts/run-aws-three-tier.sh

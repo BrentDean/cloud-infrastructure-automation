@@ -1,0 +1,33 @@
+---
+- name: Ensure Python runtime for monitoring plugins
+  ansible.builtin.apt:
+    name: python3
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+
+- name: Create LabOps monitoring plugin directory
+  ansible.builtin.file:
+    path: "{{ monitoring_checks_install_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install shared monitoring plugin helper
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../monitoring/plugins/labops_plugin.py"
+    dest: "{{ monitoring_checks_install_dir }}/labops_plugin.py"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Install Nagios/Icinga-compatible LabOps checks
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../monitoring/plugins/{{ item }}"
+    dest: "{{ monitoring_checks_install_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: '0755'
+  loop: "{{ monitoring_checks_plugins }}"

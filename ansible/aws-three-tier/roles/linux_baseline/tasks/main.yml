@@ -1,0 +1,139 @@
+---
+- name: Require Ubuntu-family host for AWS baseline
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == 'Debian'
+    fail_msg: "The AWS baseline role is written for the Ubuntu/Debian lab hosts."
+
+- name: Install host-hardening packages
+  ansible.builtin.apt:
+    name:
+      - auditd
+      - openssh-server
+      - ufw
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+
+- name: Install SSH hardening drop-in
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/99-labops-hardening.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PubkeyAuthentication yes
+      X11Forwarding no
+  notify: Reload SSH
+
+- name: Validate effective SSH daemon configuration syntax
+  ansible.builtin.command:
+    argv: [/usr/sbin/sshd, -t]
+  changed_when: false
+
+- name: Require auditd to write records to disk
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: '^\s*write_logs\s*='
+    line: 'write_logs = yes'
+    owner: root
+    group: root
+    mode: '0600'
+  notify: Restart auditd
+
+- name: Install LabOps audit watch rules
+  ansible.builtin.copy:
+    dest: /etc/audit/rules.d/99-labops.rules
+    owner: root
+    group: root
+    mode: '0600'
+    content: |
+      {% for rule in linux_baseline_audit_rules %}
+      {{ rule }}
+      {% endfor %}
+  notify: Load audit rules
+
+- name: Ensure audit service is enabled and running
+  ansible.builtin.systemd_service:
+    name: auditd
+    enabled: true
+    state: started
+
+- name: Validate firewall rule inputs
+  ansible.builtin.assert:
+    that:
+      - item.source | length > 0
+      - item.port | int > 0
+      - item.port | int < 65536
+      - item.comment | length > 0
+  loop: "{{ linux_baseline_firewall_rules }}"
+  when: linux_baseline_firewall_enabled | bool
+
+- name: Set UFW default inbound policy in configuration
+  ansible.builtin.lineinfile:
+    path: /etc/default/ufw
+    regexp: '^DEFAULT_INPUT_POLICY='
+    line: 'DEFAULT_INPUT_POLICY="DROP"'
+  register: ufw_input_policy
+  when: linux_baseline_firewall_enabled | bool
+
+- name: Set UFW default outbound policy in configuration
+  ansible.builtin.lineinfile:
+    path: /etc/default/ufw
+    regexp: '^DEFAULT_OUTPUT_POLICY='
+    line: 'DEFAULT_OUTPUT_POLICY="ACCEPT"'
+  register: ufw_output_policy
+  when: linux_baseline_firewall_enabled | bool
+
+- name: Install source-restricted UFW allow rules
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - allow
+      - from
+      - "{{ item.source }}"
+      - to
+      - any
+      - port
+      - "{{ item.port | string }}"
+      - proto
+      - tcp
+      - comment
+      - "{{ item.comment }}"
+  register: ufw_rule
+  changed_when: >
+    'Rule added' in (ufw_rule.stdout | default('')) or
+    'Rule updated' in (ufw_rule.stdout | default(''))
+  loop: "{{ linux_baseline_firewall_rules }}"
+  when: linux_baseline_firewall_enabled | bool
+
+- name: Read UFW status before enabling
+  ansible.builtin.command:
+    argv: [ufw, status, verbose]
+  register: ufw_status_before
+  changed_when: false
+  when: linux_baseline_firewall_enabled | bool
+
+- name: Enable UFW after allow rules are installed
+  ansible.builtin.command:
+    argv: [ufw, --force, enable]
+  when:
+    - linux_baseline_firewall_enabled | bool
+    - "'Status: active' not in ufw_status_before.stdout"
+  changed_when: true
+
+- name: Reload active UFW after default-policy changes
+  ansible.builtin.command:
+    argv: [ufw, reload]
+  when:
+    - linux_baseline_firewall_enabled | bool
+    - "'Status: active' in ufw_status_before.stdout"
+    - (ufw_input_policy.changed | default(false)) or (ufw_output_policy.changed | default(false))
+  changed_when: true
+
+- name: Apply security service handlers before verification
+  ansible.builtin.meta: flush_handlers

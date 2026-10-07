@@ -1,0 +1,172 @@
+name: AWS Three-Tier Infrastructure Validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-validation:
+    name: Terraform and Ansible (no cloud deployment)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.16.3'
+      - name: Terraform formatting
+        run: terraform fmt -check -recursive terraform/aws-three-tier
+      - name: Terraform initialize without remote backend
+        working-directory: terraform/aws-three-tier
+        run: terraform init -backend=false -input=false
+      - name: Terraform validate
+        working-directory: terraform/aws-three-tier
+        run: terraform validate -no-color
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Ansible Core
+        run: python -m pip install 'ansible-core>=2.18,<2.20'
+      - name: Check playbook syntax without contacting EC2
+        run: |
+          cat > /tmp/aws-three-tier-inventory.ini <<'INVENTORY'
+          [lab_web]
+          web ansible_connection=local
+          [lab_app]
+          app ansible_connection=local
+          [lab_broker]
+          broker ansible_connection=local
+          [lab_db]
+          db ansible_connection=local
+          [aws_lab:children]
+          lab_web
+          lab_app
+          lab_broker
+          lab_db
+          INVENTORY
+          ansible-playbook -i /tmp/aws-three-tier-inventory.ini ansible/aws-three-tier/configure.yml --syntax-check
+          ansible-playbook -i /tmp/aws-three-tier-inventory.ini ansible/aws-three-tier/messaging.yml --syntax-check
+          ansible-playbook -i /tmp/aws-three-tier-inventory.ini ansible/aws-three-tier/hardening.yml --syntax-check
+          ansible-playbook -i /tmp/aws-three-tier-inventory.ini ansible/aws-three-tier/security-evidence.yml --syntax-check
+          ansible-playbook -i /tmp/aws-three-tier-inventory.ini ansible/aws-three-tier/smoke-test.yml --syntax-check
+          cat > /tmp/rhel9-inventory.ini <<'INVENTORY'
+          [rhel9]
+          rhel9node ansible_connection=local
+          INVENTORY
+          ansible-playbook -i /tmp/rhel9-inventory.ini ansible/rhel9-security/selected-hardening.yml --syntax-check
+      - name: Validate security-control contracts
+        run: python3 scripts/validate_security_controls.py
+      - name: Validate runner shell scripts
+        run: bash -n scripts/run-aws-three-tier.sh scripts/build-event-worker.sh scripts/destroy-aws-three-tier.sh scripts/verify-aws-three-tier-cleanup.sh
+
+  messaging-role-integration:
+    name: Ansible NATS + Go worker integration (no AWS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+          cache-dependency-path: services/event-worker/go.sum
+      - name: Install Ansible and NATS Python client
+        run: python -m pip install 'ansible-core>=2.18,<2.20' 'nats-py>=2.16,<3.0'
+      - name: Build static Go event worker
+        run: scripts/build-event-worker.sh /tmp/labops-event-worker
+      - name: Start isolated PostgreSQL and event-delivery schema
+        env:
+          LAB_DB_PASSWORD: ci-labops-password
+        run: |
+          docker run -d --name labops-ansible-postgres \
+            -e POSTGRES_DB=labdb -e POSTGRES_USER=labuser \
+            -e POSTGRES_PASSWORD="$LAB_DB_PASSWORD" \
+            -p 127.0.0.1:15432:5432 postgres:16
+          for attempt in {1..60}; do
+            docker exec labops-ansible-postgres pg_isready -U labuser -d labdb && break
+            sleep 1
+          done
+          docker exec -i labops-ansible-postgres \
+            psql -U labuser -d labdb -v ON_ERROR_STOP=1 \
+            < apps/three-tier-api/migrations/0003_event_deliveries.sql
+      - name: Deploy NATS and worker twice with Ansible
+        env:
+          LAB_DB_PASSWORD: ci-labops-password
+          LAB_EVENT_WORKER_BINARY: /tmp/labops-event-worker
+        run: |
+          cat > /tmp/messaging-inventory.ini <<'INVENTORY'
+          [lab_broker]
+          broker ansible_connection=local lab_private_ip=127.0.0.1
+          [lab_db]
+          db ansible_connection=local lab_private_ip=127.0.0.1
+          INVENTORY
+          ansible-playbook -i /tmp/messaging-inventory.ini \
+            ansible/aws-three-tier/messaging.yml -e event_worker_pg_port=15432
+          ansible-playbook -i /tmp/messaging-inventory.ini \
+            ansible/aws-three-tier/messaging.yml -e event_worker_pg_port=15432 \
+            | tee /tmp/messaging-second.log
+          python - <<'PY'
+          import pathlib, re
+          text = pathlib.Path('/tmp/messaging-second.log').read_text()
+          if not re.search(r'(?m)^broker\s+:\s+ok=\d+\s+changed=0\s+unreachable=0\s+failed=0\b', text):
+              raise SystemExit('Messaging-role idempotency failed')
+          print('PASS: second messaging Ansible run changed=0')
+          PY
+      - name: Execute Ansible-installed monitoring plugins
+        run: |
+          /usr/local/libexec/labops-monitoring/check_labops_nats.py \
+            --warning-ms 2000 --critical-ms 5000
+          /usr/local/libexec/labops-monitoring/check_labops_systemd.py \
+            --unit nats-server
+          /usr/local/libexec/labops-monitoring/check_labops_systemd.py \
+            --unit labops-event-worker
+          echo 'PASS: installed Nagios/Icinga-compatible broker checks returned OK'
+      - name: Publish through deployed JetStream and require worker persistence
+        run: |
+          python - <<'PY'
+          import asyncio, json
+          import nats
+
+          EVENT_ID = '11111111-2222-4333-8444-555555555555'
+          INCIDENT_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+
+          async def main():
+              nc = await nats.connect('nats://127.0.0.1:4222')
+              js = nc.jetstream()
+              payload = json.dumps({
+                  'event_id': EVENT_ID,
+                  'incident_id': INCIDENT_ID,
+                  'event_type': 'incident.created',
+              }, separators=(',', ':')).encode()
+              await js.publish(
+                  'labops.incident.created',
+                  payload,
+                  headers={'Nats-Msg-Id': EVENT_ID},
+              )
+              await nc.close()
+
+          asyncio.run(main())
+          PY
+          count=0
+          for attempt in {1..30}; do
+            count="$(docker exec labops-ansible-postgres \
+              psql -U labuser -d labdb -tAc \
+              "SELECT count(*) FROM event_deliveries WHERE event_id='11111111-2222-4333-8444-555555555555'::uuid;")"
+            [[ "$count" == "1" ]] && break
+            sleep 1
+          done
+          [[ "$count" == "1" ]]
+          sudo systemctl is-active nats-server labops-event-worker
+          curl -fsS 'http://127.0.0.1:8222/healthz?js-enabled-only=true'
+          echo 'PASS: Ansible-deployed NATS and Go worker persisted a JetStream event'
+      - name: Clean up local messaging services
+        if: always()
+        run: |
+          sudo systemctl disable --now labops-event-worker nats-server 2>/dev/null || true
+          docker rm -f labops-ansible-postgres 2>/dev/null || true

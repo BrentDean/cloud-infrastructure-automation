@@ -1,0 +1,64 @@
+---
+- name: Harden public web and bastion host
+  hosts: web
+  become: true
+  gather_facts: true
+  vars:
+    linux_baseline_firewall_rules:
+      - source: "{{ lab_allowed_cidr }}"
+        port: 22
+        comment: labops-operator-ssh
+      - source: "{{ lab_allowed_cidr }}"
+        port: 80
+        comment: labops-operator-http
+  roles:
+    - role: linux_baseline
+
+- name: Harden private application host
+  hosts: app
+  become: true
+  gather_facts: true
+  vars:
+    linux_baseline_firewall_enabled: "{{ (lab_app_runtime | default('systemd')) != 'k3s' }}"
+    linux_baseline_firewall_rules:
+      - source: "{{ hostvars['web'].lab_private_ip }}/32"
+        port: 22
+        comment: labops-bastion-ssh
+      - source: "{{ hostvars['web'].lab_private_ip }}/32"
+        port: "{{ 30080 if (lab_app_runtime | default('systemd')) == 'k3s' else 8000 }}"
+        comment: labops-web-app
+  roles:
+    - role: linux_baseline
+
+- name: Harden private messaging broker
+  hosts: broker
+  become: true
+  gather_facts: true
+  vars:
+    linux_baseline_firewall_rules:
+      - source: "{{ hostvars['web'].lab_private_ip }}/32"
+        port: 22
+        comment: labops-bastion-ssh
+      - source: "{{ hostvars['app'].lab_private_ip }}/32"
+        port: 4222
+        comment: labops-app-nats
+  roles:
+    - role: linux_baseline
+
+- name: Harden private PostgreSQL host
+  hosts: db
+  become: true
+  gather_facts: true
+  vars:
+    linux_baseline_firewall_rules:
+      - source: "{{ hostvars['web'].lab_private_ip }}/32"
+        port: 22
+        comment: labops-bastion-ssh
+      - source: "{{ hostvars['app'].lab_private_ip }}/32"
+        port: 5432
+        comment: labops-app-postgresql
+      - source: "{{ hostvars['broker'].lab_private_ip }}/32"
+        port: 5432
+        comment: labops-broker-postgresql
+  roles:
+    - role: linux_baseline

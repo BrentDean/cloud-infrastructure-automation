@@ -1,0 +1,8 @@
+---
+linux_baseline_firewall_enabled: true
+linux_baseline_firewall_rules: []
+linux_baseline_audit_rules:
+  - "-w /etc/ssh/sshd_config -p wa -k labops_ssh_config"
+  - "-w /etc/ssh/sshd_config.d/ -p wa -k labops_ssh_config"
+  - "-w /etc/ufw/ -p wa -k labops_firewall_config"
+  - "-w /etc/systemd/system/ -p wa -k labops_systemd_units"
